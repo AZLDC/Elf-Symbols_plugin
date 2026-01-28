@@ -5,6 +5,7 @@
 """
 import importlib
 import os
+import re
 import subprocess
 import sys
 import time
@@ -52,14 +53,55 @@ READ_RETRY_MAX = 5  # 重試次數
 INPUT_LANG_EN = "00000409"  # 英文輸入法
 INPUT_LANG_BOPOMO = "00000404"  # 新注音/注音輸入法
 VALUE_NAME = "Enable Simplified Chinese Output"
-# 用來偵測新注音的版本，會從下面註冊檔資訊找對應的機碼
-# 依序羅列常見 Office/IME 版本，若未找到會讓後續流程決定要建立哪個節點。
-CANDIDATE_PATHS = [
-    r"SOFTWARE\Microsoft\IME\16.0\IMETC",
-    r"SOFTWARE\Microsoft\IME\15.0\IMETC",
-    r"SOFTWARE\Microsoft\IME\14.0\IMETC",
-    r"SOFTWARE\Microsoft\IME\13.0\IMETC",
-]
+# 針對 IME 設定的登錄路徑，改以「基底路徑 + 動態列舉 + 常見預設值」三層策略，
+# 讓未知版本也能被自動納入，減少每次升級都得修改常數的情況。
+IME_BASE_PATH = r"SOFTWARE\Microsoft\IME"
+IME_VERSION_HINTS = ("16.0", "15.0", "14.0", "13.0")
+CANDIDATE_PATHS: list[str] = []
+
+def _build_candidate_paths() -> None:
+    """依目前註冊表自動推導可用路徑，並保留常見預設值"""
+
+    if CANDIDATE_PATHS:
+        return
+
+    seen_paths = set()
+
+    def _append(path: str) -> None:
+        normalized = path.replace("/", "\\")
+        if not normalized or normalized in seen_paths:
+            return
+        seen_paths.add(normalized)
+        CANDIDATE_PATHS.append(normalized)
+
+    version_names: list[str] = []
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, IME_BASE_PATH, 0, winreg.KEY_READ) as base_key:
+            index = 0
+            while True:
+                try:
+                    sub_name = winreg.EnumKey(base_key, index)
+                except OSError:
+                    break
+                if re.match(r"^\d+\.\d+$", sub_name):
+                    version_names.append(sub_name)
+                index += 1
+    except OSError:
+        pass
+
+    for sub_name in sorted(version_names, reverse=True):
+        _append(fr"{IME_BASE_PATH}\\{sub_name}\\IMETC")
+
+    for version in IME_VERSION_HINTS:
+        _append(fr"{IME_BASE_PATH}\\{version}\\IMETC")
+
+    _append(fr"{IME_BASE_PATH}\\IMETC")
+
+    if not CANDIDATE_PATHS:
+        _append(fr"{IME_BASE_PATH}\\16.0\\IMETC")
+
+_build_candidate_paths()
+
 # 註冊 AppUserModelID 讓托盤圖示與通知可被系統正確歸屬，避免被視為未知程式。
 def set_app_user_model_id(app_id: str) -> None:
     try:
@@ -85,6 +127,7 @@ CTFMON_RESTART_DELAY = 0.1
 SYSTEM_ROOT = os.environ.get("SystemRoot", r"C:\\Windows")
 CTFMON_EXE_PATH = os.path.join(SYSTEM_ROOT, "System32", "ctfmon.exe")
 CREATE_NO_WINDOW = 0x08000000
+SW_HIDE = 0
 
 # Win32/GDI+ 輔助定義，取代第三方托盤套件並讓 PNG 圖示能被載入
 user32 = ctypes.windll.user32
@@ -227,9 +270,32 @@ def _create_icon_from_png(path: str) -> Optional[wintypes.HICON]:
 
     return hicon if hicon else None
 
+def _start_ctfmon_process() -> bool:
+    """以多種方式啟動 ctfmon，避免權限需求"""
+    if not os.path.exists(CTFMON_EXE_PATH):
+        print("找不到 ctfmon.exe，請檢查系統檔案")
+        return False
+
+    try:
+        subprocess.Popen(CTFMON_EXE_PATH, creationflags=CREATE_NO_WINDOW)
+        return True
+    except OSError as exc:
+        if getattr(exc, "winerror", None) != 740:
+            print(f"以 Popen 啟動 ctfmon.exe 失敗：{exc}")
+    except Exception as exc:
+        print(f"以 Popen 啟動 ctfmon.exe 失敗：{exc}")
+
+    try:
+        result = shell32.ShellExecuteW(None, "open", CTFMON_EXE_PATH, None, SYSTEM_ROOT, SW_HIDE)
+        if result > 32:
+            return True
+        print(f"ShellExecute 啟動 ctfmon.exe 失敗（代碼 {result}）")
+    except Exception as exc:
+        print(f"ShellExecute 啟動 ctfmon.exe 失敗：{exc}")
+    return False
 
 def _restart_ctfmon() -> None:
-    """重新啟動 ctfmon.exe 以刷新輸入法喵"""
+    """重新啟動 ctfmon.exe 以刷新輸入法"""
     if os.name != "nt":
         return
 
@@ -242,17 +308,13 @@ def _restart_ctfmon() -> None:
         )
     except FileNotFoundError:
         print("找不到 taskkill，無法先關閉 ctfmon.exe")
+    except PermissionError:
+        print("taskkill 需要提升權限，改為直接重新啟動 ctfmon")
     except Exception as exc:
         print(f"關閉 ctfmon.exe 失敗：{exc}")
 
-    if not os.path.exists(CTFMON_EXE_PATH):
-        print("找不到 ctfmon.exe，請檢查系統檔案")
-        return
-
-    try:
-        subprocess.Popen(CTFMON_EXE_PATH, creationflags=CREATE_NO_WINDOW)
-    except Exception as exc:
-        print(f"啟動 ctfmon.exe 失敗：{exc}")
+    if not _start_ctfmon_process():
+        print("無法重新啟動 ctfmon.exe，輸入法可能無法立即刷洗")
 
 _icon_handle_cache: dict[str, wintypes.HICON] = {}
 
@@ -493,7 +555,7 @@ def _ensure_tray_menu() -> wintypes.HMENU:
     menu = user32.CreatePopupMenu()
     if not menu:
         raise ctypes.WinError(ctypes.get_last_error())
-    # 
+    
     # 關閉
     user32.AppendMenuW(menu, MF_STRING, IDM_EXIT, "關閉APP")
     _tray_menu = menu
