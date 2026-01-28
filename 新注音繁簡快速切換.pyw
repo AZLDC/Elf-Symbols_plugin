@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-功能：Alt-Alt-W 觸發新注音輸入法「繁體/簡體輸出」切換
+功能 : Alt-Alt-W 觸發新注音輸入法「繁體/簡體輸出」切換
       依輸入法狀態更新托盤圖示並可由托盤切換
 """
 import importlib
@@ -15,6 +15,9 @@ import winreg
 from ctypes import wintypes
 from dataclasses import dataclass
 from typing import Optional
+
+# 強制關閉輸入法等待重新啟動，預設關閉
+KILL_CTFMON = False
 
 # 舊版 Python 可能沒有 wintypes.LRESULT，需自行定義
 if not hasattr(wintypes, "LRESULT"):
@@ -38,13 +41,13 @@ def _require_plugin(module_path: str, friendly_name: str):
         return importlib.import_module(module_path)
     except ImportError as exc:
         print(f"缺少 {friendly_name}，程式無法繼續執行。請先安裝對應套件。")
-        print(f"模組路徑：{module_path}")
-        print(f"詳細錯誤：{exc}")
+        print(f"模組路徑 : {module_path}")
+        print(f"詳細錯誤 : {exc}")
         raise SystemExit(1)
 
 keyboard = _require_plugin("keyboard", "Keyboard 全域快捷鍵模組")
 
-# 全域參數集中在這裡：包含註冊 AUMID 供系統識別、自訂提示文字、快速鍵時序與相關等待時間。
+# 全域參數集中在這裡 : 包含註冊 AUMID 供系統識別、自訂提示文字、快速鍵時序與相關等待時間。
 # 這些值被設為常數是為了方便調整與維護，避免魔法數散落各處。
 MODEL_ID = "com.AZLDC.TCSCTRN"
 TITLE_HINT = "模式切換 Alt、Alt、W"
@@ -126,6 +129,7 @@ INITIAL_ICON_HOLD_SECONDS = 3.0
 CTFMON_RESTART_DELAY = 0.1
 SYSTEM_ROOT = os.environ.get("SystemRoot", r"C:\\Windows")
 CTFMON_EXE_PATH = os.path.join(SYSTEM_ROOT, "System32", "ctfmon.exe")
+TASKKILL_EXE_PATH = os.path.join(SYSTEM_ROOT, "System32", "taskkill.exe")
 CREATE_NO_WINDOW = 0x08000000
 SW_HIDE = 0
 
@@ -234,7 +238,7 @@ def _create_icon_from_png(path: str) -> Optional[wintypes.HICON]:
     try:
         _startup_gdiplus()
     except Exception as exc:
-        print(f"GDI+ 初始化失敗：{exc}")
+        print(f"GDI+ 初始化失敗 : {exc}")
         return None
 
     bitmap = ctypes.c_void_p()
@@ -281,9 +285,9 @@ def _start_ctfmon_process() -> bool:
         return True
     except OSError as exc:
         if getattr(exc, "winerror", None) != 740:
-            print(f"以 Popen 啟動 ctfmon.exe 失敗：{exc}")
+            print(f"以 Popen 啟動 ctfmon.exe 失敗 : {exc}")
     except Exception as exc:
-        print(f"以 Popen 啟動 ctfmon.exe 失敗：{exc}")
+        print(f"以 Popen 啟動 ctfmon.exe 失敗 : {exc}")
 
     try:
         result = shell32.ShellExecuteW(None, "open", CTFMON_EXE_PATH, None, SYSTEM_ROOT, SW_HIDE)
@@ -291,27 +295,68 @@ def _start_ctfmon_process() -> bool:
             return True
         print(f"ShellExecute 啟動 ctfmon.exe 失敗（代碼 {result}）")
     except Exception as exc:
-        print(f"ShellExecute 啟動 ctfmon.exe 失敗：{exc}")
+        print(f"ShellExecute 啟動 ctfmon.exe 失敗 : {exc}")
     return False
+
+def _kill_ctfmon_elevated() -> bool:
+    """使用提升權限的 taskkill 終止 ctfmon"""
+    executable = TASKKILL_EXE_PATH if os.path.exists(TASKKILL_EXE_PATH) else "taskkill.exe"
+    args = "/IM ctfmon.exe /F"
+    try:
+        result = shell32.ShellExecuteW(None, "runas", executable, args, None, SW_HIDE)
+        if result > 32:
+            print("已透過提升權限的 taskkill 終止 ctfmon.exe")
+            return True
+        print(f"提升權限的 taskkill 失敗（代碼 {result}）")
+    except Exception as exc:
+        print(f"提升權限的 taskkill 失敗 : {exc}")
+    return False
+
+def _kill_ctfmon_process() -> bool:
+    """嘗試終止既有的 ctfmon.exe，必要時提升權限"""
+    escalation_needed = False
+    try:
+        result = subprocess.run(
+            ["taskkill", "/IM", "ctfmon.exe", "/F"],
+            check=False,
+            capture_output=True,
+            creationflags=CREATE_NO_WINDOW,
+            text=True,
+        )
+    except FileNotFoundError:
+        print("找不到 taskkill，無法關閉 ctfmon.exe")
+        return False
+    except PermissionError:
+        print("taskkill 需要提升權限，嘗試升級")
+        escalation_needed = True
+    except Exception as exc:
+        print(f"關閉 ctfmon.exe 失敗 : {exc}")
+        return False
+    else:
+        if result.returncode == 0:
+            return True
+        output = ((result.stdout or "") + (result.stderr or "")).strip()
+        if "存取被拒" in output:
+            print("taskkill 無權終止 ctfmon.exe（存取被拒），嘗試升級")
+            escalation_needed = True
+        else:
+            detail = output or f"exit code {result.returncode}"
+            print(f"taskkill ctfmon.exe 失敗 : {detail}")
+            return False
+
+    if not escalation_needed:
+        return False
+    return _kill_ctfmon_elevated()
 
 def _restart_ctfmon() -> None:
     """重新啟動 ctfmon.exe 以刷新輸入法"""
     if os.name != "nt":
         return
 
-    try:
-        subprocess.run(
-            ["taskkill", "/IM", "ctfmon.exe", "/F"],
-            check=False,
-            capture_output=True,
-            creationflags=CREATE_NO_WINDOW,
-        )
-    except FileNotFoundError:
-        print("找不到 taskkill，無法先關閉 ctfmon.exe")
-    except PermissionError:
-        print("taskkill 需要提升權限，改為直接重新啟動 ctfmon")
-    except Exception as exc:
-        print(f"關閉 ctfmon.exe 失敗：{exc}")
+    if KILL_CTFMON:
+        if not _kill_ctfmon_process():
+            print("無法終止既有的 ctfmon.exe，請以系統管理員身分手動關閉後重試")
+            return
 
     if not _start_ctfmon_process():
         print("無法重新啟動 ctfmon.exe，輸入法可能無法立即刷洗")
@@ -418,7 +463,7 @@ def set_output_mode(target_bit: int) -> tuple[bool, str]:
     except OSError as exc:
         return False, f"{target_path} ({exc})"
 
-# 組合托盤提示文字：用兩行呈現目前輸出狀態與快捷提示，減少使用者忘記操作方式。
+# 組合托盤提示文字 : 用兩行呈現目前輸出狀態與快捷提示，減少使用者忘記操作方式。
 def build_tray_title(mode_text: str) -> str:
     return f"輸入法輸出 - {mode_text}\n{TITLE_HINT}"
 
@@ -632,7 +677,7 @@ def update_tray_icon() -> None:
     try:
         _ensure_notify_icon()
     except Exception as exc:
-        print(f"托盤初始化失敗：{exc}")
+        print(f"托盤初始化失敗 : {exc}")
         return
 
     if not _tray_nid:
@@ -667,7 +712,7 @@ def refresh_ime_state(wait_for: Optional[int] = None) -> None:
         print("找不到 Enable Simplified Chinese Output，可能尚未建立或版本路徑不同")
     else:
         mode_text = get_mode_text(ime_mode_bit)
-        print(f"目前輸入法模式：{mode_text} (值={info.raw})")
+        print(f"目前輸入法模式 : {mode_text} (值={info.raw})")
 
     update_tray_icon()
 
@@ -706,7 +751,7 @@ def toggle_ime_mode() -> None:
 
     ok, detail = set_output_mode(target)
     if not ok:
-        print(f"寫入失敗：{detail}")
+        print(f"寫入失敗 : {detail}")
         return
     _refresh_input_language()
     refresh_ime_state(wait_for=target)
@@ -804,7 +849,7 @@ def run_tray() -> None:
     _message_loop()
 
 
-# 程式進入點：先同步狀態、掛上鍵盤全域監聽，再提示使用方式，最後進入托盤主迴圈。
+# 程式進入點 : 先同步狀態、掛上鍵盤全域監聽，再提示使用方式，最後進入托盤主迴圈。
 def main() -> None:
     refresh_ime_state()
     keyboard.hook(on_key_event)
