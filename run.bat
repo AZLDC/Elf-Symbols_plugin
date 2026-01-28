@@ -1,7 +1,7 @@
 @echo off
 setlocal
 set "SCRIPT_DIR=%~dp0"
-set "SCRIPT=%SCRIPT_DIR%新注音繁簡快速切換.pyw"
+set "SCRIPT=%SCRIPT_DIR%Elf-Symbols_plugin.pyw"
 set "PYW=%SystemRoot%\pyw.exe"
 set "PY=%SystemRoot%\py.exe"
 if not exist "%SCRIPT%" (
