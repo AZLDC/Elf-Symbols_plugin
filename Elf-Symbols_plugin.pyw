@@ -55,6 +55,14 @@ SEQ_TIMEOUT = 0.5  # Alt-Alt 時間窗口（秒）
 READ_RETRY_MAX = 5  # 重試次數
 INPUT_LANG_EN = "00000409"  # 英文輸入法
 INPUT_LANG_BOPOMO = "00000404"  # 新注音/注音輸入法
+INPUT_LANG_BOPOMO_ID = int(INPUT_LANG_BOPOMO, 16)
+INPUT_LANG_LABELS = {
+    INPUT_LANG_EN.upper(): "英文鍵盤",
+    INPUT_LANG_BOPOMO.upper(): "新注音鍵盤",
+    "00000411": "日文鍵盤",
+}
+ALT_KEY_NAMES = ("alt", "left alt", "right alt")
+SHIFT_KEY_NAMES = ("shift", "left shift", "right shift")
 VALUE_NAME = "Enable Simplified Chinese Output"
 # 針對 IME 設定的登錄路徑，改以「基底路徑 + 動態列舉 + 常見預設值」三層策略，
 # 讓未知版本也能被自動納入，減少每次升級都得修改常數的情況。
@@ -161,6 +169,14 @@ TPM_LEFTALIGN = 0x0000
 TPM_BOTTOMALIGN = 0x0020
 TPM_RETURNCMD = 0x0100
 MF_STRING = 0x0000
+EVENT_SYSTEM_FOREGROUND = 0x0003
+EVENT_SYSTEM_SWITCHSTART = 0x0014
+EVENT_SYSTEM_SWITCHEND = 0x0015
+WINEVENT_OUTOFCONTEXT = 0x0000
+WINEVENT_SKIPOWNPROCESS = 0x0002
+HSHELL_LANGUAGE = 0x002A
+HSHELL_RUDEAPPACTIVATED = 0x8000
+WM_SHELLHOOKMESSAGE = user32.RegisterWindowMessageW("SHELLHOOK")
 
 def MAKEINTRESOURCE(value: int):
     return ctypes.cast(ctypes.c_void_p(value), wintypes.LPWSTR)
@@ -202,6 +218,16 @@ class NOTIFYICONDATAW(ctypes.Structure):
     ]
 
 WNDPROC = ctypes.WINFUNCTYPE(wintypes.LRESULT, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+WINEVENTPROC = ctypes.WINFUNCTYPE(
+    None,
+    wintypes.HANDLE,
+    wintypes.DWORD,
+    wintypes.HWND,
+    wintypes.LONG,
+    wintypes.LONG,
+    wintypes.DWORD,
+    wintypes.DWORD,
+)
 
 class WNDCLASS(ctypes.Structure):
     _fields_ = [
@@ -217,7 +243,33 @@ class WNDCLASS(ctypes.Structure):
         ("lpszClassName", wintypes.LPCWSTR),
     ]
 
+# Win32 GUI thread 相關結構：供 GetGUIThreadInfo 回填焦點視窗與插入號資訊。
+# RECT 結構定義矩形區域的座標，分別為左、上、右、下邊界
+class RECT(ctypes.Structure):
+    _fields_ = [
+        ("left", wintypes.LONG),  # 矩形左邊界
+        ("top", wintypes.LONG),   # 矩形上邊界
+        ("right", wintypes.LONG), # 矩形右邊界
+        ("bottom", wintypes.LONG),# 矩形下邊界
+    ]
+
+class GUITHREADINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("flags", wintypes.DWORD),
+        ("hwndActive", wintypes.HWND),
+        ("hwndFocus", wintypes.HWND),
+        ("hwndCapture", wintypes.HWND),
+        ("hwndMenuOwner", wintypes.HWND),
+        ("hwndMoveSize", wintypes.HWND),
+        ("hwndCaret", wintypes.HWND),
+        ("rcCaret", RECT),
+    ]
+
 gdiplus_token = ctypes.c_ulong(0)
+_win_event_hook: Optional[wintypes.HANDLE] = None
+_win_event_proc: Optional[WINEVENTPROC] = None
+_last_foreground_hwnd: Optional[wintypes.HWND] = None
 
 def _startup_gdiplus() -> None:
     if gdiplus_token.value:
@@ -474,24 +526,36 @@ _w_hook = None
 _timeout_timer = None
 _tray_updates_enabled = False
 _initial_icon_timer: Optional[threading.Timer] = None
+# 記錄背景緒最後一次偵測到的 HKL 與緒本身，方便避免重複啟動。
+_current_input_layout: Optional[int] = None
+_alt_shift_probe_ts = 0.0
+_alt_down = False
+_shift_down = False
 
 WM_TRAYICON = WM_APP + 1
 IDM_TOGGLE = 1001
 IDM_EXIT = 1002
 _tray_hwnd: Optional[wintypes.HWND] = None
 _tray_wndproc: Optional[WNDPROC] = None
+_shell_hook_registered = False
 _tray_icon_added = False
 
 # 根據目前狀態挑選對應的圖示與說明，若初始化尚未完成就先顯示預設圖示。
 def _resolve_icon_assets() -> tuple[str, str]:
     if not _tray_updates_enabled:
         return ICON_DEFAULT, build_tray_title("正在初始化")
+    if not _is_bopomo_active():
+        if _current_input_layout:
+            label, _ = _describe_layout(_current_input_layout)
+            status = f"目前為 {label}w"
+        else:
+            status = "請切換至注音輸入法"
+        return ICON_DEFAULT, build_tray_title(status)
     if ime_mode_bit == 1:
         return ICON_SIMP, build_tray_title("簡體輸出")
     if ime_mode_bit == 0:
         return ICON_TRAD, build_tray_title("繁體輸出")
     return ICON_DEFAULT, build_tray_title("狀態更新中")
-
 
 # 延遲載入的圖示確保在資源準備好後再打開，即便啟動時檔案仍在讀取中也能平順過渡。
 def _enable_tray_updates() -> None:
@@ -500,7 +564,6 @@ def _enable_tray_updates() -> None:
     _initial_icon_timer = None
     update_tray_icon()
 
-
 # 啟動時先顯示預設圖示一段時間，避免瞬間切來切去造成閃爍，也留下緩衝更新狀態。
 def _compute_initial_hold_delay() -> float:
     install_duration = max(0.0, DEPENDENCY_READY_TIME - PROGRAM_START_TIME)
@@ -508,7 +571,6 @@ def _compute_initial_hold_delay() -> float:
     elapsed = time.time() - PROGRAM_START_TIME
     remaining = target_hold - elapsed
     return remaining if remaining > 0 else 0.0
-
 
 def _schedule_initial_icon_release(delay: float) -> None:
     global _initial_icon_timer, _tray_updates_enabled
@@ -525,13 +587,15 @@ _tray_class_name = "OfficeHealthIMETrayWindow"
 _tray_nid: Optional[NOTIFYICONDATAW] = None
 _tray_menu: Optional[wintypes.HMENU] = None
 
-
 def _tray_window_proc(hwnd: wintypes.HWND, msg: wintypes.UINT, wparam: wintypes.WPARAM, lparam: wintypes.LPARAM):
     if msg == WM_TRAYICON:
         if lparam == WM_LBUTTONUP:
             toggle_ime_mode()
         elif lparam in (WM_RBUTTONUP, WM_CONTEXTMENU):
             _show_context_menu(hwnd)
+        return 0
+    if msg == WM_SHELLHOOKMESSAGE:
+        _handle_shell_hook_event(int(wparam), lparam)
         return 0
     if msg == WM_COMMAND:
         command_id = wparam & 0xFFFF
@@ -545,7 +609,6 @@ def _tray_window_proc(hwnd: wintypes.HWND, msg: wintypes.UINT, wparam: wintypes.
         user32.PostQuitMessage(0)
         return 0
     return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
-
 
 def _register_tray_window_class() -> None:
     global _tray_wndproc
@@ -565,7 +628,6 @@ def _register_tray_window_class() -> None:
         err = kernel32.GetLastError()
         if err != 1410:  # ERROR_CLASS_ALREADY_EXISTS
             raise ctypes.WinError(err)
-
 
 def _create_tray_window() -> wintypes.HWND:
     global _tray_hwnd
@@ -590,8 +652,46 @@ def _create_tray_window() -> wintypes.HWND:
     if not hwnd:
         raise ctypes.WinError(ctypes.get_last_error())
     _tray_hwnd = hwnd
+    _register_shell_hook_window(hwnd)
     return hwnd
 
+def _register_shell_hook_window(hwnd: wintypes.HWND) -> None:
+    global _shell_hook_registered
+    if _shell_hook_registered or not WM_SHELLHOOKMESSAGE:
+        return
+    if not user32.RegisterShellHookWindow(hwnd):
+        err = ctypes.get_last_error()
+        print(f"RegisterShellHookWindow 失敗 : {err}")
+        return
+    _shell_hook_registered = True
+    print("Shell hook 已註冊")
+
+def _unregister_shell_hook_window() -> None:
+    global _shell_hook_registered
+    if not _shell_hook_registered or not _tray_hwnd:
+        return
+    if not user32.DeregisterShellHookWindow(_tray_hwnd):
+        err = ctypes.get_last_error()
+        print(f"DeregisterShellHookWindow 失敗 : {err}")
+    _shell_hook_registered = False
+
+def _handle_shell_hook_event(code: int, detail: wintypes.LPARAM) -> None:
+    if code == HSHELL_LANGUAGE:
+        print("偵測到輸入法切換事件，重新讀取 HKL")
+        _schedule_async_layout_refresh(
+            "ShellHook 輸入法切換",
+            attempts=4,
+            delay=0.12,
+            initial_delay=0.05,
+        )
+    elif code == HSHELL_RUDEAPPACTIVATED:
+        print("偵測到前景應用程式切換事件")
+        _schedule_async_layout_refresh(
+            "ShellHook 前景切換",
+            attempts=3,
+            delay=0.12,
+            initial_delay=0.08,
+        )
 
 def _ensure_tray_menu() -> wintypes.HMENU:
     global _tray_menu
@@ -606,13 +706,11 @@ def _ensure_tray_menu() -> wintypes.HMENU:
     _tray_menu = menu
     return menu
 
-
 def _destroy_tray_menu() -> None:
     global _tray_menu
     if _tray_menu:
         user32.DestroyMenu(_tray_menu)
         _tray_menu = None
-
 
 def _show_context_menu(hwnd: wintypes.HWND) -> None:
     menu = _ensure_tray_menu()
@@ -630,7 +728,6 @@ def _show_context_menu(hwnd: wintypes.HWND) -> None:
     )
     if cmd:
         user32.PostMessageW(hwnd, WM_COMMAND, cmd, 0)
-
 
 def _ensure_notify_icon() -> None:
     global _tray_nid, _tray_icon_added
@@ -651,7 +748,6 @@ def _ensure_notify_icon() -> None:
     _tray_nid = nid
     _tray_icon_added = True
 
-
 def _remove_notify_icon() -> None:
     global _tray_nid, _tray_icon_added
     if _tray_icon_added and _tray_nid:
@@ -659,9 +755,10 @@ def _remove_notify_icon() -> None:
     _tray_nid = None
     _tray_icon_added = False
 
-
 def _release_tray_resources() -> None:
     global _tray_hwnd
+    _unregister_shell_hook_window()
+    _stop_foreground_monitor()
     _remove_notify_icon()
     _destroy_tray_menu()
     _cleanup_icon_cache()
@@ -669,7 +766,6 @@ def _release_tray_resources() -> None:
     if _tray_hwnd:
         user32.DestroyWindow(_tray_hwnd)
         _tray_hwnd = None
-
 
 def update_tray_icon() -> None:
     """更新托盤圖示"""
@@ -687,6 +783,190 @@ def update_tray_icon() -> None:
     _tray_nid.hIcon = _get_icon_handle(icon_path)
     _tray_nid.szTip = title[:127]
     shell32.Shell_NotifyIconW(NIM_MODIFY, ctypes.byref(_tray_nid))
+
+def _describe_layout(hkl: int) -> tuple[str, str]:
+    """依 HKL 轉換成可辨識的語系文字與顯示用十六進位碼"""
+    layout_hex = f"{hkl & 0xFFFFFFFF:08X}".upper()
+    lang_hex = f"{hkl & 0xFFFF:04X}".zfill(8).upper()
+    label = INPUT_LANG_LABELS.get(layout_hex, INPUT_LANG_LABELS.get(lang_hex, "其他鍵盤"))
+    return label, layout_hex
+
+
+def _is_bopomo_layout(hkl: Optional[int]) -> bool:
+    if hkl is None:
+        return False
+    lang_id = hkl & 0xFFFF
+    if lang_id == INPUT_LANG_BOPOMO_ID:
+        return True
+    layout_hex = f"{hkl & 0xFFFFFFFF:08X}".upper()
+    return layout_hex.endswith(INPUT_LANG_BOPOMO.upper())
+
+
+def _is_bopomo_active() -> bool:
+    global _current_input_layout
+    if _current_input_layout is None:
+        _current_input_layout = _read_foreground_layout()
+    return _is_bopomo_layout(_current_input_layout)
+
+
+def _format_current_layout_detail() -> str:
+    if _current_input_layout is None:
+        return "無法偵測目前輸入法"
+    label, layout_hex = _describe_layout(_current_input_layout)
+    return f"目前輸入法為 {label} (HKL={layout_hex})"
+
+
+def _ensure_bopomo_input(reason: str) -> bool:
+    if _is_bopomo_active():
+        return True
+    print(f"{reason} : 僅在注音輸入法中啟用，{_format_current_layout_detail()}")
+    return False
+
+def _read_foreground_layout() -> Optional[int]:
+    """讀取目前前景視窗（或其焦點子視窗）的 HKL"""
+    hwnd = user32.GetForegroundWindow()
+    if not hwnd:
+        return None
+    process_id = wintypes.DWORD()
+    thread_id = user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
+    if not thread_id:
+        return None
+    gui_info = GUITHREADINFO(cbSize=ctypes.sizeof(GUITHREADINFO))
+    if user32.GetGUIThreadInfo(thread_id, ctypes.byref(gui_info)):
+        focus_hwnd = gui_info.hwndFocus or gui_info.hwndActive or gui_info.hwndCaret
+        if focus_hwnd:
+            focus_thread_id = user32.GetWindowThreadProcessId(focus_hwnd, ctypes.byref(process_id))
+            if focus_thread_id:
+                thread_id = focus_thread_id
+
+    hkl = user32.GetKeyboardLayout(thread_id)
+    if hkl:
+        return hkl
+
+    current_thread_id = kernel32.GetCurrentThreadId()
+    attached = False
+    if current_thread_id != thread_id:
+        attached = bool(user32.AttachThreadInput(current_thread_id, thread_id, True))
+    try:
+        hkl = user32.GetKeyboardLayout(0)
+    finally:
+        if attached:
+            user32.AttachThreadInput(current_thread_id, thread_id, False)
+    return hkl if hkl else None
+
+def _log_current_layout(hkl: Optional[int]) -> None:
+    """將目前偵測到的輸入法狀態輸出到主控台"""
+    if hkl is None:
+        print("目前輸入法 : 無法取得（前景視窗不存在）")
+        return
+    label, layout_hex = _describe_layout(hkl)
+    print(f"目前輸入法 : {label} (HKL={layout_hex})")
+
+def _refresh_foreground_layout(force_log: bool = False, source: Optional[str] = None) -> None:
+    """更新目前輸入法快照，必要時輸出訊息"""
+    global _current_input_layout
+    hkl = _read_foreground_layout()
+    changed = hkl != _current_input_layout
+    _current_input_layout = hkl
+    if force_log or changed:
+        if source:
+            print(f"{source} : 重新讀取輸入法狀態")
+        _log_current_layout(hkl)
+    elif source:
+        if hkl is None:
+            print(f"{source} : 仍無法取得輸入法狀態")
+        else:
+            label, layout_hex = _describe_layout(hkl)
+            # print(f"{source} : 輸入法維持 {label} (HKL={layout_hex})")
+    if changed:
+        update_tray_icon()
+
+def _schedule_async_layout_refresh(
+    source: str,
+    attempts: int = 3,
+    delay: float = 0.15,
+    initial_delay: float = 0.0,
+) -> None:
+    """以背景緒多次刷新輸入法狀態，避開 WinEvent 尚未完成切換的時間差"""
+
+    def worker() -> None:
+        if initial_delay > 0:
+            time.sleep(initial_delay)
+        for attempt in range(attempts):
+            force_log = attempt == 0
+            suffix = "" if attempt == 0 else f" (重試 {attempt + 1})"
+            _refresh_foreground_layout(force_log=force_log, source=f"{source}{suffix}")
+            if attempt < attempts - 1:
+                time.sleep(delay)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+def _on_foreground_event(
+    hook_handle: wintypes.HANDLE,
+    event: wintypes.DWORD,
+    hwnd: wintypes.HWND,
+    id_object: wintypes.LONG,
+    id_child: wintypes.LONG,
+    event_thread: wintypes.DWORD,
+    event_time: wintypes.DWORD,
+) -> None:
+    del hook_handle, id_object, id_child, event_thread, event_time
+    global _last_foreground_hwnd
+    if event == EVENT_SYSTEM_FOREGROUND:
+        if not hwnd:
+            return
+        if hwnd == _last_foreground_hwnd:
+            return
+        _last_foreground_hwnd = hwnd
+        print(f"WinEvent: 前景視窗切換到 HWND={hwnd}")
+        _schedule_async_layout_refresh(
+            "WinEvent 前景變更",
+            attempts=3,
+            delay=0.12,
+            initial_delay=0.08,
+        )
+        return
+    if event in (EVENT_SYSTEM_SWITCHSTART, EVENT_SYSTEM_SWITCHEND):
+        phase = "開始" if event == EVENT_SYSTEM_SWITCHSTART else "結束"
+        print(f"WinEvent: 輸入法切換{phase} (HWND={hwnd})")
+        initial_delay = 0.0 if event == EVENT_SYSTEM_SWITCHEND else 0.05
+        _schedule_async_layout_refresh(
+            "WinEvent 輸入法切換",
+            attempts=4,
+            delay=0.12,
+            initial_delay=initial_delay,
+        )
+
+def _start_foreground_monitor() -> None:
+    """啟動 WinEvent hook 以監聽前景視窗變更"""
+    global _win_event_hook, _win_event_proc, _last_foreground_hwnd
+    if _win_event_hook:
+        return
+    callback = WINEVENTPROC(_on_foreground_event)
+    hook = user32.SetWinEventHook(
+        EVENT_SYSTEM_FOREGROUND,
+        EVENT_SYSTEM_SWITCHEND,
+        0,
+        callback,
+        0,
+        0,
+        WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+    )
+    if not hook:
+        raise ctypes.WinError(ctypes.get_last_error())
+    _win_event_proc = callback
+    _win_event_hook = hook
+    _last_foreground_hwnd = user32.GetForegroundWindow()
+    print("WinEvent 前景監聽已啟動")
+    _refresh_foreground_layout(force_log=True, source="初始化")
+
+def _stop_foreground_monitor() -> None:
+    """解除 WinEvent hook"""
+    global _win_event_hook, _win_event_proc
+    if _win_event_hook:
+        user32.UnhookWinEvent(_win_event_hook)
+        _win_event_hook = None
+    _win_event_proc = None
 
 # 週期性讀取輸出模式；若剛寫入會先等一下再讀，確保系統真的套用到期望值。
 def refresh_ime_state(wait_for: Optional[int] = None) -> None:
@@ -743,6 +1023,9 @@ def _refresh_input_language() -> None:
 def toggle_ime_mode() -> None:
     """切換 IME 繁/簡輸出"""
     global ime_mode_bit
+
+    if not _ensure_bopomo_input("切換繁/簡輸出"):
+        return
 
     refresh_ime_state()
     current = ime_mode_bit if ime_mode_bit in (0, 1) else 0
@@ -811,22 +1094,53 @@ def _start_waiting_for_w() -> None:
 def on_key_event(event: keyboard.KeyboardEvent) -> None:
     """偵測 Alt-Alt-W"""
     global _alt_timestamps
+    global _alt_down, _shift_down
 
     key_name = event.name.lower() if event.name else ""
+    is_alt_key = key_name in ALT_KEY_NAMES
+    is_shift_key = key_name in SHIFT_KEY_NAMES
 
     if event.event_type == "down":
-        now = time.time()
-        if key_name == "alt":
-            # 保留時間視窗內的 Alt 按下時間點，確保判斷只依近期操作。
-            _alt_timestamps = [t for t in _alt_timestamps if now - t < SEQ_TIMEOUT]
-            _alt_timestamps.append(now)
-            if len(_alt_timestamps) >= 2 and now - _alt_timestamps[-2] < SEQ_TIMEOUT:
-                # 兩次 Alt 夠接近就觸發等待 W，其他按鍵則視為失敗並重置。
-                _alt_timestamps.clear()
-                _start_waiting_for_w()
+        if is_shift_key:
+            _shift_down = True
+            if _alt_down:
+                _trigger_alt_shift_probe()
+        elif is_alt_key:
+            was_alt_down = _alt_down
+            _alt_down = True
+            if not was_alt_down:
+                if _shift_down:
+                    _trigger_alt_shift_probe()
+                now = time.time()
+                # 保留時間視窗內的 Alt 按下時間點，確保判斷只依近期操作。
+                _alt_timestamps = [t for t in _alt_timestamps if now - t < SEQ_TIMEOUT]
+                _alt_timestamps.append(now)
+                if len(_alt_timestamps) >= 2 and now - _alt_timestamps[-2] < SEQ_TIMEOUT:
+                    # 兩次 Alt 夠接近就觸發等待 W，其他按鍵則視為失敗並重置。
+                    _alt_timestamps.clear()
+                    if _ensure_bopomo_input("Alt-Alt 快捷"):
+                        _start_waiting_for_w()
         else:
             _alt_timestamps.clear()
+    elif event.event_type == "up":
+        if is_shift_key:
+            _shift_down = False
+        elif is_alt_key:
+            _alt_down = False
 
+def _trigger_alt_shift_probe() -> None:
+    global _alt_shift_probe_ts
+    now = time.time()
+    if now - _alt_shift_probe_ts < 0.2:
+        return
+    _alt_shift_probe_ts = now
+    print("偵測到 Alt+Shift 輸入法切換操作")
+    _schedule_async_layout_refresh(
+        "Alt+Shift 偵測",
+        attempts=4,
+        delay=0.1,
+        initial_delay=0.02,
+    )
 
 # Win32 訊息迴圈，維持托盤事件
 def _message_loop() -> None:
@@ -840,7 +1154,6 @@ def _message_loop() -> None:
         user32.TranslateMessage(ctypes.byref(msg))
         user32.DispatchMessageW(ctypes.byref(msg))
 
-
 def run_tray() -> None:
     set_app_user_model_id(MODEL_ID)
     _schedule_initial_icon_release(_compute_initial_hold_delay())
@@ -848,11 +1161,11 @@ def run_tray() -> None:
     update_tray_icon()
     _message_loop()
 
-
 # 程式進入點 : 先同步狀態、掛上鍵盤全域監聽，再提示使用方式，最後進入托盤主迴圈。
 def main() -> None:
     refresh_ime_state()
     keyboard.hook(on_key_event)
+    _start_foreground_monitor()
 
     # 以文字提示提醒使用者操作方式，當托盤圖示不可見時仍能得知快捷鍵。
     print("Alt-Alt-W = 切換輸入法繁/簡輸出")
