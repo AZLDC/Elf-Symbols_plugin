@@ -3,40 +3,68 @@
 功能 : Alt-Alt-W 觸發新注音輸入法「繁體/簡體輸出」切換
       依輸入法狀態更新托盤圖示並可由托盤切換
 """
+# 匯入 importlib 以便動態載入可選插件，避免缺模組時提早失敗
 import importlib
+# 匯入 os 處理檔案、目錄與環境變數操作
 import os
+# 匯入 re 供註冊表版本字串比對使用
 import re
+# 匯入 subprocess 以呼叫外部程式（例如 ctfmon、taskkill）
 import subprocess
+# 匯入 sys 取得 PyInstaller 解壓目錄與腳本資訊
 import sys
+# 匯入 time 供排程、計時與重試控制
 import time
+# 匯入 threading 建立背景計時器與非同步操作
 import threading
+# 匯入 ctypes 直接呼叫 Win32 API
 import ctypes
+# 匯入 winreg 讀寫註冊表中的 IME 設定
 import winreg
+# 從 ctypes 匯入 wintypes 以取得 Windows 特有型別定義
 from ctypes import wintypes
+# 匯入 dataclass 讓註冊表資料封裝得更結構化
 from dataclasses import dataclass
+# 匯入 Optional 用於型別提示表示「可能為 None」
 from typing import Optional
 
-# 強制關閉輸入法等待重新啟動，預設關閉
+# 控制是否在切換輸出模式時強行關閉 ctfmon，再重新啟動
 KILL_CTFMON = False
 
-# 舊版 Python 可能沒有 wintypes.LRESULT，需自行定義
+# 為舊版 Python 補齊缺失的 Win32 型別，避免 API 綁定時噴錯
 if not hasattr(wintypes, "LRESULT"):
+    # 以 c_long 模擬遺失的 LRESULT 型別
     wintypes.LRESULT = ctypes.c_long
+# 逐一檢查常見的 handle 型別，若缺少就使用 HANDLE 取代
 for _name in ("HCURSOR", "HICON", "HBRUSH", "HMENU"):
     if not hasattr(wintypes, _name):
         setattr(wintypes, _name, wintypes.HANDLE)
 
-# 64 位元系統上的 LONG_PTR/ULONG_PTR 需擴充成 64 位，避免 Win32 回呼參數 overflow。
+# 若執行於 64 位元環境，將 LPARAM/WPARAM/LRESULT 調整成 64 位以防溢位
 if ctypes.sizeof(ctypes.c_void_p) == 8:
     wintypes.LPARAM = ctypes.c_longlong
     wintypes.WPARAM = ctypes.c_ulonglong
     wintypes.LRESULT = ctypes.c_longlong
 
-# 預先檢查依賴並在命令提示字元輸出錯誤
+# 紀錄程式啟動時間，稍後計算托盤圖示延遲
 PROGRAM_START_TIME = time.time()
+# 在依賴確認完畢後更新，若未使用額外依賴則維持相同值
 DEPENDENCY_READY_TIME = PROGRAM_START_TIME
 
 def _require_plugin(module_path: str, friendly_name: str):
+    """載入可選套件並在缺少時給出具體指引
+
+    參數:
+        module_path (str): 可由 importlib 導入的模組路徑
+        friendly_name (str): 給使用者看的易讀名稱，便於辨識缺少哪個套件
+
+    回傳:
+        ModuleType: 成功載入後的模組物件，讓後續直接使用其中 API
+
+    說明:
+        - 此函式集中處理 ImportError，避免在多處重複 try/except
+        - 當缺少依賴時輸出指示並立即結束，以免程式處於半初始化狀態
+    """
     try:
         return importlib.import_module(module_path)
     except ImportError as exc:
