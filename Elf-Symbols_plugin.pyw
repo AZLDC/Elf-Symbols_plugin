@@ -545,7 +545,7 @@ def set_output_mode(target_bit: int) -> tuple[bool, str]:
 
 # 組合托盤提示文字 : 用兩行呈現目前輸出狀態與快捷提示，減少使用者忘記操作方式。
 def build_tray_title(mode_text: str) -> str:
-    return f"輸入法輸出 - {mode_text}\n{TITLE_HINT}"
+    return f"輸入法輸出 - {mode_text}"
 
 ime_mode_bit: Optional[int] = None
 _alt_timestamps = []
@@ -575,14 +575,14 @@ def _resolve_icon_assets() -> tuple[str, str]:
     if not _is_bopomo_active():
         if _current_input_layout:
             label, _ = _describe_layout(_current_input_layout)
-            status = f"目前為 {label}w"
+            status = f"目前為 {label}"
         else:
             status = "請切換至注音輸入法"
         return ICON_DEFAULT, build_tray_title(status)
     if ime_mode_bit == 1:
-        return ICON_SIMP, build_tray_title("簡體輸出")
+        return ICON_SIMP, build_tray_title(f"簡體輸出\n{TITLE_HINT}")
     if ime_mode_bit == 0:
-        return ICON_TRAD, build_tray_title("繁體輸出")
+        return ICON_TRAD, build_tray_title(f"繁體輸出\n{TITLE_HINT}")
     return ICON_DEFAULT, build_tray_title("狀態更新中")
 
 # 延遲載入的圖示確保在資源準備好後再打開，即便啟動時檔案仍在讀取中也能平順過渡。
