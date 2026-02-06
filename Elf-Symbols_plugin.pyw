@@ -3,6 +3,9 @@
 功能 : Alt-Alt-W 觸發新注音輸入法「繁體/簡體輸出」切換
       依輸入法狀態更新托盤圖示並可由托盤切換
 """
+# ============================================================================
+# 匯入區塊
+# ============================================================================
 # 匯入 importlib 以便動態載入可選插件，避免缺模組時提早失敗
 import importlib
 # 匯入 os 處理檔案、目錄與環境變數操作
@@ -31,6 +34,9 @@ from typing import Optional
 # 控制是否在切換輸出模式時強行關閉 ctfmon，再重新啟動
 KILL_CTFMON = False
 
+# ============================================================================
+# Win32 型別補丁（須在常數定義前完成）
+# ============================================================================
 # 為舊版 Python 補齊缺失的 Win32 型別，避免 API 綁定時噴錯
 if not hasattr(wintypes, "LRESULT"):
     # 以 c_long 模擬遺失的 LRESULT 型別
@@ -46,6 +52,9 @@ if ctypes.sizeof(ctypes.c_void_p) == 8:
     wintypes.WPARAM = ctypes.c_ulonglong
     wintypes.LRESULT = ctypes.c_longlong
 
+# ============================================================================
+# 時間與依賴追蹤
+# ============================================================================
 # 紀錄程式啟動時間，稍後計算托盤圖示延遲
 PROGRAM_START_TIME = time.time()
 # 在依賴確認完畢後更新，若未使用額外依賴則維持相同值
@@ -75,6 +84,9 @@ def _require_plugin(module_path: str, friendly_name: str):
 
 keyboard = _require_plugin("keyboard", "Keyboard 全域快捷鍵模組")
 
+# ============================================================================
+# 應用程式常數定義
+# ============================================================================
 # 全域參數集中在這裡 : 包含註冊 AUMID 供系統識別、自訂提示文字、快速鍵時序與相關等待時間。
 # 這些值被設為常數是為了方便調整與維護，避免魔法數散落各處。
 MODEL_ID = "com.AZLDC.TCSCTRN"
@@ -169,6 +181,9 @@ TASKKILL_EXE_PATH = os.path.join(SYSTEM_ROOT, "System32", "taskkill.exe")
 CREATE_NO_WINDOW = 0x08000000
 SW_HIDE = 0
 
+# ============================================================================
+# Win32 API 綁定與常數
+# ============================================================================
 # Win32/GDI+ 輔助定義，取代第三方托盤套件並讓 PNG 圖示能被載入
 user32 = ctypes.windll.user32
 shell32 = ctypes.windll.shell32
@@ -209,6 +224,9 @@ WM_SHELLHOOKMESSAGE = user32.RegisterWindowMessageW("SHELLHOOK")
 def MAKEINTRESOURCE(value: int):
     return ctypes.cast(ctypes.c_void_p(value), wintypes.LPWSTR)
 
+# ============================================================================
+# Win32 / ctypes 結構定義
+# ============================================================================
 class GdiplusStartupInput(ctypes.Structure):
     _fields_ = [
         ("GdiplusVersion", ctypes.c_uint32),
@@ -294,11 +312,48 @@ class GUITHREADINFO(ctypes.Structure):
         ("rcCaret", RECT),
     ]
 
+# ============================================================================
+# 全域狀態變數
+# ============================================================================
+# --- GDI+ 狀態 ---
 gdiplus_token = ctypes.c_ulong(0)
+
+# --- 前景視窗監控狀態 ---
 _win_event_hook: Optional[wintypes.HANDLE] = None
 _win_event_proc: Optional[WINEVENTPROC] = None
 _last_foreground_hwnd: Optional[wintypes.HWND] = None
 
+# --- IME 狀態 ---
+ime_mode_bit: Optional[int] = None
+_current_input_layout: Optional[int] = None
+
+# --- 快捷鍵狀態 ---
+_alt_timestamps: list = []
+_waiting_for_w: bool = False
+_w_hook = None
+_timeout_timer = None
+_alt_shift_probe_ts: float = 0.0
+_alt_down: bool = False
+_shift_down: bool = False
+
+# --- 托盤狀態 ---
+_tray_updates_enabled: bool = False
+_initial_icon_timer: Optional[threading.Timer] = None
+WM_TRAYICON = WM_APP + 1
+IDM_TOGGLE = 1001
+IDM_EXIT = 1002
+_tray_hwnd: Optional[wintypes.HWND] = None
+_tray_wndproc: Optional[WNDPROC] = None
+_shell_hook_registered: bool = False
+_tray_icon_added: bool = False
+_tray_class_name = "OfficeHealthIMETrayWindow"
+_tray_nid: Optional[NOTIFYICONDATAW] = None
+_tray_menu: Optional[wintypes.HMENU] = None
+_icon_handle_cache: dict[str, wintypes.HICON] = {}
+
+# ============================================================================
+# GDI+ 圖示處理函數
+# ============================================================================
 def _startup_gdiplus() -> None:
     if gdiplus_token.value:
         return
@@ -354,6 +409,9 @@ def _create_icon_from_png(path: str) -> Optional[wintypes.HICON]:
 
     return hicon if hicon else None
 
+# ============================================================================
+# ctfmon 控制函數
+# ============================================================================
 def _start_ctfmon_process() -> bool:
     """以多種方式啟動 ctfmon，避免權限需求"""
     if not os.path.exists(CTFMON_EXE_PATH):
@@ -441,8 +499,9 @@ def _restart_ctfmon() -> None:
     if not _start_ctfmon_process():
         print("無法重新啟動 ctfmon.exe，輸入法可能無法立即刷洗")
 
-_icon_handle_cache: dict[str, wintypes.HICON] = {}
-
+# ============================================================================
+# 圖示快取管理
+# ============================================================================
 def _get_icon_handle(path: str) -> wintypes.HICON:
     handle = _icon_handle_cache.get(path)
     if handle:
@@ -459,6 +518,9 @@ def _cleanup_icon_cache() -> None:
             user32.DestroyIcon(handle)
     _icon_handle_cache.clear()
 
+# ============================================================================
+# 註冊表操作函數
+# ============================================================================
 # 將註冊值資訊包成 dataclass，方便一次帶出路徑、鍵名、原始值與型別，減少傳遞多個參數的錯誤。
 @dataclass(frozen=True)
 class RegValueInfo:
@@ -543,30 +605,12 @@ def set_output_mode(target_bit: int) -> tuple[bool, str]:
     except OSError as exc:
         return False, f"{target_path} ({exc})"
 
+# ============================================================================
+# 托盤視窗與圖示管理
+# ============================================================================
 # 組合托盤提示文字 : 用兩行呈現目前輸出狀態與快捷提示，減少使用者忘記操作方式。
 def build_tray_title(mode_text: str) -> str:
     return f"輸入法輸出 - {mode_text}"
-
-ime_mode_bit: Optional[int] = None
-_alt_timestamps = []
-_waiting_for_w = False
-_w_hook = None
-_timeout_timer = None
-_tray_updates_enabled = False
-_initial_icon_timer: Optional[threading.Timer] = None
-# 記錄背景緒最後一次偵測到的 HKL 與緒本身，方便避免重複啟動。
-_current_input_layout: Optional[int] = None
-_alt_shift_probe_ts = 0.0
-_alt_down = False
-_shift_down = False
-
-WM_TRAYICON = WM_APP + 1
-IDM_TOGGLE = 1001
-IDM_EXIT = 1002
-_tray_hwnd: Optional[wintypes.HWND] = None
-_tray_wndproc: Optional[WNDPROC] = None
-_shell_hook_registered = False
-_tray_icon_added = False
 
 # 根據目前狀態挑選對應的圖示與說明，若初始化尚未完成就先顯示預設圖示。
 def _resolve_icon_assets() -> tuple[str, str]:
@@ -610,10 +654,6 @@ def _schedule_initial_icon_release(delay: float) -> None:
     timer.daemon = True
     _initial_icon_timer = timer
     timer.start()
-
-_tray_class_name = "OfficeHealthIMETrayWindow"
-_tray_nid: Optional[NOTIFYICONDATAW] = None
-_tray_menu: Optional[wintypes.HMENU] = None
 
 def _tray_window_proc(hwnd: wintypes.HWND, msg: wintypes.UINT, wparam: wintypes.WPARAM, lparam: wintypes.LPARAM):
     if msg == WM_TRAYICON:
@@ -812,6 +852,9 @@ def update_tray_icon() -> None:
     _tray_nid.szTip = title[:127]
     shell32.Shell_NotifyIconW(NIM_MODIFY, ctypes.byref(_tray_nid))
 
+# ============================================================================
+# 輸入法狀態偵測函數
+# ============================================================================
 def _describe_layout(hkl: int) -> tuple[str, str]:
     """依 HKL 轉換成可辨識的語系文字與顯示用十六進位碼"""
     layout_hex = f"{hkl & 0xFFFFFFFF:08X}".upper()
@@ -929,6 +972,9 @@ def _schedule_async_layout_refresh(
 
     threading.Thread(target=worker, daemon=True).start()
 
+# ============================================================================
+# 前景視窗監控（WinEvent Hook）
+# ============================================================================
 def _on_foreground_event(
     hook_handle: wintypes.HANDLE,
     event: wintypes.DWORD,
@@ -996,6 +1042,9 @@ def _stop_foreground_monitor() -> None:
         _win_event_hook = None
     _win_event_proc = None
 
+# ============================================================================
+# IME 模式切換函數
+# ============================================================================
 # 週期性讀取輸出模式；若剛寫入會先等一下再讀，確保系統真的套用到期望值。
 def refresh_ime_state(wait_for: Optional[int] = None) -> None:
     """讀取目前 IME 輸出模式，可等待指定結果"""
@@ -1067,6 +1116,9 @@ def toggle_ime_mode() -> None:
     _refresh_input_language()
     refresh_ime_state(wait_for=target)
 
+# ============================================================================
+# 快捷鍵處理函數（Alt-Alt-W）
+# ============================================================================
 # 中斷 Alt-Alt 序列後的 W 鍵等待，並釋放 hook/timer，避免掛鉤一直存在造成資源佔用。
 def _stop_waiting_for_w() -> None:
     global _waiting_for_w, _w_hook, _timeout_timer
@@ -1170,6 +1222,9 @@ def _trigger_alt_shift_probe() -> None:
         initial_delay=0.02,
     )
 
+# ============================================================================
+# 訊息迴圈與主程式入口
+# ============================================================================
 # Win32 訊息迴圈，維持托盤事件
 def _message_loop() -> None:
     msg = wintypes.MSG()
