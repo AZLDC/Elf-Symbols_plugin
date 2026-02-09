@@ -17,6 +17,7 @@ import re
 import subprocess
 # 匯入 sys 取得 PyInstaller 解壓目錄與腳本資訊
 import sys
+sys.dont_write_bytecode = True
 # 匯入 time 供排程、計時與重試控制
 import time
 # 匯入 threading 建立背景計時器與非同步操作
