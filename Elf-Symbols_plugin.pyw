@@ -8,6 +8,7 @@
 # ============================================================================
 # 匯入 importlib 以便動態載入可選插件，避免缺模組時提早失敗
 import importlib
+import importlib.util
 # 匯入 os 處理檔案、目錄與環境變數操作
 import os
 # 匯入 re 供註冊表版本字串比對使用
@@ -26,6 +27,8 @@ import ctypes
 import winreg
 # 從 ctypes 匯入 wintypes 以取得 Windows 特有型別定義
 from ctypes import wintypes
+# 匯入 ModuleType 讓動態載入的模組能有型別提示
+from types import ModuleType
 # 匯入 dataclass 讓註冊表資料封裝得更結構化
 from dataclasses import dataclass
 # 匯入 Optional 用於型別提示表示「可能為 None」
@@ -174,11 +177,93 @@ ICON_SIMP = _resource_path("簡.png")
 ICON_DEFAULT = _resource_path("轉.png")
 # 啟動後保留預設圖示的秒數，避免托盤頻繁閃爍，也提供系統時間完成初始化。
 INITIAL_ICON_HOLD_SECONDS = 3.0
-CTFMON_RESTART_DELAY = 0.1
-SYSTEM_ROOT = os.environ.get("SystemRoot", r"C:\\Windows")
-CTFMON_EXE_PATH = os.path.join(SYSTEM_ROOT, "System32", "ctfmon.exe")
-TASKKILL_EXE_PATH = os.path.join(SYSTEM_ROOT, "System32", "taskkill.exe")
-CREATE_NO_WINDOW = 0x08000000
+
+# ============================================================================
+# Cursors_FIX 整合（選用）
+# ============================================================================
+_CURSOR_FIX_FILENAME = "Cursors_FIX.py"
+
+def _cursor_fix_script_path() -> str:
+    if hasattr(sys, "_MEIPASS"):
+        base_dir = sys._MEIPASS
+    else:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_dir, _CURSOR_FIX_FILENAME)
+
+def _load_cursor_fix_module() -> Optional[ModuleType]:
+    global _cursor_fix_module
+    if _cursor_fix_module is not None:
+        return _cursor_fix_module
+    script_path = _cursor_fix_script_path()
+    if not os.path.exists(script_path):
+        return None
+    spec = importlib.util.spec_from_file_location("Cursors_FIX_embed", script_path)
+    if spec is None or spec.loader is None:
+        print("Cursors_FIX 解析失敗，略過啟動")
+        return None
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except Exception as exc:
+        print(f"載入 Cursors_FIX 失敗 : {exc}")
+        return None
+    _cursor_fix_module = module
+    return module
+
+def _cursor_fix_worker(module: ModuleType) -> None:
+    get_cursor_handle = getattr(module, "get_cursor_handle", None)
+    force_reload = getattr(module, "force_reload_cursors", None)
+    if not callable(get_cursor_handle) or not callable(force_reload):
+        print("Cursors_FIX 模組缺少必要函式，無法啟動")
+        return
+
+    poll_interval = getattr(module, "POLL_INTERVAL_SEC", getattr(module, "poll_interval_sec", 0.02))
+    cooldown = getattr(module, "COOLDOWN_SEC", getattr(module, "cooldown_sec", 0.20))
+    last_handle = None
+    cooldown_until = 0.0
+    print("Cursors_FIX 游標監控執行緒啟動")
+
+    while not _cursor_fix_stop_event.wait(poll_interval):
+        handle = get_cursor_handle()
+        if not handle:
+            continue
+        if last_handle is None:
+            last_handle = handle
+            print(f"[Cursors_FIX] 初始游標 : {handle:#010x}")
+            continue
+        if handle != last_handle:
+            now = time.monotonic()
+            if now >= cooldown_until:
+                print(f"[Cursors_FIX] 游標切換 {last_handle:#010x} -> {handle:#010x}，觸發重載")
+                try:
+                    force_reload()
+                except Exception as exc:
+                    print(f"[Cursors_FIX] 重載失敗 : {exc}")
+                cooldown_until = now + cooldown
+            last_handle = handle
+
+    print("Cursors_FIX 游標監控執行緒結束")
+
+def _start_cursor_fix_monitor() -> None:
+    global _cursor_fix_thread
+    if _cursor_fix_thread is not None:
+        return
+    module = _load_cursor_fix_module()
+    if module is None:
+        return
+    _cursor_fix_stop_event.clear()
+    thread = threading.Thread(target=_cursor_fix_worker, args=(module,), daemon=True)
+    _cursor_fix_thread = thread
+    thread.start()
+
+def _stop_cursor_fix_monitor() -> None:
+    global _cursor_fix_thread
+    if _cursor_fix_thread is None:
+        return
+    _cursor_fix_stop_event.set()
+    _cursor_fix_thread.join(timeout=2.0)
+    _cursor_fix_thread = None
+    _cursor_fix_stop_event.clear()
 SW_HIDE = 0
 
 # ============================================================================
@@ -350,6 +435,11 @@ _tray_class_name = "OfficeHealthIMETrayWindow"
 _tray_nid: Optional[NOTIFYICONDATAW] = None
 _tray_menu: Optional[wintypes.HMENU] = None
 _icon_handle_cache: dict[str, wintypes.HICON] = {}
+
+# --- Cursors_FIX 狀態 ---
+_cursor_fix_module: Optional[ModuleType] = None
+_cursor_fix_thread: Optional[threading.Thread] = None
+_cursor_fix_stop_event = threading.Event()
 
 # ============================================================================
 # GDI+ 圖示處理函數
@@ -827,6 +917,7 @@ def _release_tray_resources() -> None:
     global _tray_hwnd
     _unregister_shell_hook_window()
     _stop_foreground_monitor()
+    _stop_cursor_fix_monitor()
     _remove_notify_icon()
     _destroy_tray_menu()
     _cleanup_icon_cache()
@@ -1249,6 +1340,7 @@ def main() -> None:
     refresh_ime_state()
     keyboard.hook(on_key_event)
     _start_foreground_monitor()
+    _start_cursor_fix_monitor()
 
     # 以文字提示提醒使用者操作方式，當托盤圖示不可見時仍能得知快捷鍵。
     print("Alt-Alt-W = 切換輸入法繁/簡輸出")
