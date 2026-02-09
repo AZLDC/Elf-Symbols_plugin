@@ -236,12 +236,12 @@ def _cursor_fix_worker(module: ModuleType) -> None:
             continue
         if last_handle is None:
             last_handle = handle
-            print(f"[Cursors_FIX] 初始游標 : {handle:#010x}")
+            # print(f"[Cursors_FIX] 初始游標 : {handle:#010x}")
             continue
         if handle != last_handle:
             now = time.monotonic()
             if now >= cooldown_until:
-                print(f"[Cursors_FIX] 游標切換 {last_handle:#010x} -> {handle:#010x}，觸發重載")
+                # print(f"[Cursors_FIX] 游標切換 {last_handle:#010x} -> {handle:#010x}，觸發重載")
                 try:
                     force_reload()
                 except Exception as exc:
@@ -1174,12 +1174,37 @@ def refresh_ime_state(wait_for: Optional[int] = None) -> None:
 # 封裝向前景視窗送出輸入法切換訊號的細節，避免主流程需要處理 HWND 與訊息代碼。
 def _post_input_lang_request(hwnd: ctypes.c_void_p, layout_id: str) -> bool:
     user32 = ctypes.windll.user32
+    if not hwnd or not user32.IsWindow(hwnd):
+        return False
     hkl = user32.LoadKeyboardLayoutW(layout_id, 1)
     if not hkl:
         return False
-    # 送出 WM_INPUTLANGCHANGEREQUEST，請目前視窗切換成指定的輸入法配置。
-    result = user32.PostMessageW(hwnd, 0x0050, 0, hkl)  # WM_INPUTLANGCHANGEREQUEST
+    # 送出 WM_INPUTLANGCHANGEREQUEST，部分應用只讀取 lParam，因此 wParam/lParam 皆帶入 HKL。
+    result = user32.PostMessageW(hwnd, 0x0050, hkl, hkl)  # WM_INPUTLANGCHANGEREQUEST
     return bool(result)
+
+def _collect_inputlang_targets(hwnd: ctypes.c_void_p) -> list[ctypes.c_void_p]:
+    """收集需要送出 WM_INPUTLANGCHANGEREQUEST 的視窗（聚焦子視窗優先）。"""
+    user32 = ctypes.windll.user32
+    targets: list[ctypes.c_void_p] = []
+    if not hwnd:
+        return targets
+
+    process_id = wintypes.DWORD()
+    thread_id = user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
+    focus_hwnd = None
+    if thread_id:
+        gui_info = GUITHREADINFO(cbSize=ctypes.sizeof(GUITHREADINFO))
+        if user32.GetGUIThreadInfo(thread_id, ctypes.byref(gui_info)):
+            for candidate in (gui_info.hwndFocus, gui_info.hwndActive, gui_info.hwndCaret):
+                if candidate and user32.IsWindow(candidate):
+                    focus_hwnd = candidate
+                    break
+    if focus_hwnd and focus_hwnd != hwnd:
+        targets.append(focus_hwnd)
+    if user32.IsWindow(hwnd):
+        targets.append(hwnd)
+    return targets
 
 # 切換至英文再切回注音，藉由「跳一次」讓輸出模式改變被系統刷新。
 def _refresh_input_language() -> None:
@@ -1189,10 +1214,16 @@ def _refresh_input_language() -> None:
         return
 
     # 先切到英文再切回注音，透過「重新激活」迫使 IME 寫入的新模式立即生效。
-    switched_en = _post_input_lang_request(hwnd, INPUT_LANG_EN)
+    
+    targets = _collect_inputlang_targets(hwnd)
+    switched_en = False
+    for target_hwnd in targets:
+        switched_en = _post_input_lang_request(target_hwnd, INPUT_LANG_EN) or switched_en
+    
     if switched_en:
         _restart_ctfmon()
-    _post_input_lang_request(hwnd, INPUT_LANG_BOPOMO)
+    for target_hwnd in targets:
+        _post_input_lang_request(target_hwnd, INPUT_LANG_BOPOMO)
 
 # 讀取當前狀態、寫入對側模式，再觸發輸入法刷新，確保使用者立即感受到變更。
 def toggle_ime_mode() -> None:
@@ -1283,6 +1314,7 @@ def on_key_event(event: keyboard.KeyboardEvent) -> None:
             _shift_down = True
             if _alt_down:
                 _trigger_alt_shift_probe()
+
         elif is_alt_key:
             was_alt_down = _alt_down
             _alt_down = True
@@ -1298,11 +1330,14 @@ def on_key_event(event: keyboard.KeyboardEvent) -> None:
                     _alt_timestamps.clear()
                     if _ensure_bopomo_input("Alt-Alt 快捷"):
                         _start_waiting_for_w()
+
         else:
             _alt_timestamps.clear()
+
     elif event.event_type == "up":
         if is_shift_key:
             _shift_down = False
+
         elif is_alt_key:
             _alt_down = False
 
@@ -1311,6 +1346,7 @@ def _trigger_alt_shift_probe() -> None:
     now = time.time()
     if now - _alt_shift_probe_ts < 0.2:
         return
+        
     _alt_shift_probe_ts = now
     print("偵測到 Alt+Shift 輸入法切換操作")
     _schedule_async_layout_refresh(
