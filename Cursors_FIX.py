@@ -79,7 +79,7 @@ def force_reload_cursors():
         print(f"[DEBUG] SystemParametersInfoW 失敗，錯誤碼: {err}")
         return False
 
-    print(f"[DEBUG] 游標重置完成（靜態取代 → 方案重載）")
+    # print(f"[DEBUG] 游標重置完成（靜態取代 → 方案重載）")
     return True
 
 def main():
