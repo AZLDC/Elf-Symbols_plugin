@@ -178,6 +178,12 @@ ICON_DEFAULT = _resource_path("轉.png")
 # 啟動後保留預設圖示的秒數，避免托盤頻繁閃爍，也提供系統時間完成初始化。
 INITIAL_ICON_HOLD_SECONDS = 3.0
 
+# --- 系統路徑與外部程式 ---
+SYSTEM_ROOT = os.environ.get("SystemRoot", r"C:\\Windows")
+SYSTEM32_PATH = os.path.join(SYSTEM_ROOT, "System32")
+CTFMON_EXE_PATH = os.path.join(SYSTEM32_PATH, "ctfmon.exe")
+TASKKILL_EXE_PATH = os.path.join(SYSTEM32_PATH, "taskkill.exe")
+
 # ============================================================================
 # Cursors_FIX 整合（選用）
 # ============================================================================
