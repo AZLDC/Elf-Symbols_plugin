@@ -225,7 +225,7 @@ def _cursor_fix_worker(module: ModuleType) -> None:
         return
 
     poll_interval = getattr(module, "POLL_INTERVAL_SEC", getattr(module, "poll_interval_sec", 0.02))
-    cooldown = getattr(module, "COOLDOWN_SEC", getattr(module, "cooldown_sec", 0.20))
+    cooldown = getattr(module, "COOLDOWN_SEC", getattr(module, "cooldown_sec", 0.10))
     last_handle = None
     cooldown_until = 0.0
     print("Cursors_FIX 游標監控執行緒啟動")
@@ -1346,7 +1346,7 @@ def _trigger_alt_shift_probe() -> None:
     now = time.time()
     if now - _alt_shift_probe_ts < 0.2:
         return
-        
+
     _alt_shift_probe_ts = now
     print("偵測到 Alt+Shift 輸入法切換操作")
     _schedule_async_layout_refresh(
