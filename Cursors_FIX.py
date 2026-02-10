@@ -84,11 +84,10 @@ def force_reload_cursors():
 
 def main():
     poll_interval_sec = 0.02  # 功能：輪詢間隔；單位：秒
-    cooldown_sec = 0.20       # 功能：去抖動時間；單位：秒
+    cooldown_sec = 0.10       # 功能：去抖動時間；單位：秒
 
     last_h = None
     cooldown_until = 0.0
-
     print("[DEBUG] 游標監控已啟動")
 
     while True:
