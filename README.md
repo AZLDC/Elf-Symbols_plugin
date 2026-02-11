@@ -4,6 +4,8 @@
 
 本工具會讀寫目前使用者登錄檔中的 `Enable Simplified Chinese Output`，並同步更新托盤圖示與提示文字。
 
+![陸地鍵仙意象圖](./陸地鍵仙.png)
+
 ## 非官方聲明
 本專案為社群工具，非 Microsoft 官方產品，與 Microsoft 無隸屬、合作或背書關係。
 
