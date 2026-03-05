@@ -6,6 +6,8 @@
 # ============================================================================
 # 匯入區塊
 # ============================================================================
+# 匯入 json 處理設定檔的序列化與反序列化
+import json
 # 匯入 importlib 以便動態載入可選插件，避免缺模組時提早失敗
 import importlib
 import importlib.util
@@ -37,6 +39,7 @@ from typing import Optional
 
 # 控制是否在切換輸出模式時強行關閉 ctfmon，再重新啟動
 KILL_CTFMON = False
+GITHUB_URL = "https://github.com/AZLDC/Elf-Symbols_plugin"
 
 # ============================================================================
 # Win32 型別補丁（須在常數定義前完成）
@@ -176,6 +179,14 @@ def _resource_path(relative_path: str) -> str:
 ICON_TRAD = _resource_path("繁.png")
 ICON_SIMP = _resource_path("簡.png")
 ICON_DEFAULT = _resource_path("轉.png")
+LOGO_IMAGE = _resource_path("陸地鍵仙.jpg")
+
+# --- 設定檔路徑 ---
+CONFIG_FILE = _resource_path("config.cfg")
+
+# --- 開機啟動註冊表路徑 ---
+STARTUP_REG_PATH = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+STARTUP_REG_NAME = "Elf-Symbols_plugin"
 # 啟動後保留預設圖示的秒數，避免托盤頻繁閃爍，也提供系統時間完成初始化。
 INITIAL_ICON_HOLD_SECONDS = 3.0
 
@@ -433,7 +444,8 @@ _tray_updates_enabled: bool = False
 _initial_icon_timer: Optional[threading.Timer] = None
 WM_TRAYICON = WM_APP + 1
 IDM_TOGGLE = 1001
-IDM_EXIT = 1002
+IDM_SETTINGS = 1002
+IDM_EXIT = 1003
 _tray_hwnd: Optional[wintypes.HWND] = None
 _tray_wndproc: Optional[WNDPROC] = None
 _shell_hook_registered: bool = False
@@ -616,6 +628,241 @@ def _cleanup_icon_cache() -> None:
     _icon_handle_cache.clear()
 
 # ============================================================================
+# 設定檔讀寫函數
+# ============================================================================
+def _load_config() -> dict:
+    """讀取設定檔，若不存在或格式錯誤則回傳預設值"""
+    default_config = {"logo": True}
+    if not os.path.exists(CONFIG_FILE):
+        return default_config
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        if not isinstance(config, dict):
+            return default_config
+        return config
+    except (json.JSONDecodeError, OSError):
+        return default_config
+
+def _save_config(config: dict) -> bool:
+    """儲存設定檔"""
+    try:
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+        return True
+    except OSError as exc:
+        print(f"儲存設定檔失敗 : {exc}")
+        return False
+
+# ============================================================================
+# 開機啟動偵測與設定函數
+# ============================================================================
+def _get_startup_command() -> str:
+    """取得開機啟動時應執行的指令"""
+    if hasattr(sys, "frozen"):
+        # PyInstaller 打包後的執行檔路徑
+        return f'"{sys.executable}"'
+    else:
+        # 開發環境使用 pythonw 執行腳本
+        script_path = os.path.abspath(__file__)
+        pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+        if os.path.exists(pythonw):
+            return f'"{pythonw}" "{script_path}"'
+        return f'"{sys.executable}" "{script_path}"'
+
+def _is_startup_enabled() -> bool:
+    """偵測是否已設定為登入後啟動"""
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_REG_PATH, 0, winreg.KEY_READ) as key:
+            value, _ = winreg.QueryValueEx(key, STARTUP_REG_NAME)
+            return bool(value)
+    except OSError:
+        return False
+
+def _set_startup_enabled(enabled: bool) -> bool:
+    """設定或移除登入後啟動"""
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_REG_PATH, 0, winreg.KEY_SET_VALUE) as key:
+            if enabled:
+                command = _get_startup_command()
+                winreg.SetValueEx(key, STARTUP_REG_NAME, 0, winreg.REG_SZ, command)
+                print(f"已設定登入後啟動 : {command}")
+            else:
+                try:
+                    winreg.DeleteValue(key, STARTUP_REG_NAME)
+                    print("已移除登入後啟動設定")
+                except FileNotFoundError:
+                    pass
+        return True
+    except OSError as exc:
+        print(f"設定登入後啟動失敗 : {exc}")
+        return False
+
+# ============================================================================
+# 設定視窗
+# ============================================================================
+_settings_window_open: bool = False
+
+def _show_settings_window() -> None:
+    """顯示設定視窗"""
+    global _settings_window_open
+    if _settings_window_open:
+        return
+    
+    # 在背景執行緒開啟設定視窗，避免阻塞訊息迴圈
+    threading.Thread(target=_create_settings_window, daemon=True).start()
+
+def _create_settings_window() -> None:
+    """建立並顯示設定視窗（使用 tkinter）"""
+    global _settings_window_open
+    _settings_window_open = True
+    
+    try:
+        import tkinter as tk
+        from tkinter import ttk
+    except ImportError:
+        print("無法載入 tkinter，設定視窗無法顯示")
+        _settings_window_open = False
+        return
+    
+    # 讀取目前設定
+    config = _load_config()
+    initial_logo = config.get("logo", True)
+    initial_startup = _is_startup_enabled()
+    
+    # 建立視窗
+    root = tk.Tk()
+    root.title("設定")
+    root.resizable(False, False)
+    root.attributes("-topmost", True)
+    
+    # 設定視窗大小與位置（置中）
+    window_width = 300
+    window_height = 150
+    screen_width = root.winfo_screenwidth()
+    screen_height = root.winfo_screenheight()
+    x = (screen_width - window_width) // 2
+    y = (screen_height - window_height) // 2
+    root.geometry(f"{window_width}x{window_height}+{x}+{y}")
+    
+    # 建立框架
+    frame = ttk.Frame(root, padding="20")
+    frame.pack(fill=tk.BOTH, expand=True)
+    
+    # 核選方塊變數
+    startup_var = tk.BooleanVar(value=initial_startup)
+    logo_var = tk.BooleanVar(value=initial_logo)
+    
+    # 登入後啟動核選方塊
+    startup_cb = ttk.Checkbutton(frame, text="登入後啟動", variable=startup_var)
+    startup_cb.pack(anchor=tk.W, pady=5)
+    
+    # 顯示 Logo 核選方塊
+    logo_cb = ttk.Checkbutton(frame, text="啟動時顯示 Logo", variable=logo_var)
+    logo_cb.pack(anchor=tk.W, pady=5)
+    
+    def on_close():
+        global _settings_window_open
+        
+        # 先取得設定值
+        new_logo = logo_var.get()
+        new_startup = startup_var.get()
+        
+        # 立即關閉視窗，避免 UI 卡住
+        _settings_window_open = False
+        root.destroy()
+        
+        # 將儲存操作放到背景執行緒，避免阻塞
+        def save_settings():
+            # 儲存 config.cfg
+            config["logo"] = new_logo
+            _save_config(config)
+            
+            # 若登入後啟動設定有變更，則更新系統設定
+            if new_startup != initial_startup:
+                _set_startup_enabled(new_startup)
+        
+        threading.Thread(target=save_settings, daemon=True).start()
+    
+    root.protocol("WM_DELETE_WINDOW", on_close)
+    
+    # 關閉按鈕
+    close_btn = ttk.Button(frame, text="關閉", command=on_close)
+    close_btn.pack(pady=10)
+    
+    root.mainloop()
+
+# ============================================================================
+# 啟動時顯示 Logo 圖片
+# ============================================================================
+def _show_logo_splash() -> None:
+    """顯示 Logo 圖片（啟動畫面）"""
+    if not os.path.exists(LOGO_IMAGE):
+        print(f"Logo 圖片不存在 : {LOGO_IMAGE}")
+        return
+    
+    try:
+        import tkinter as tk
+        import webbrowser
+        from PIL import Image, ImageTk
+    except ImportError as exc:
+        print(f"無法載入圖片顯示模組 : {exc}")
+        return
+    
+    def show_splash():
+        root = tk.Tk()
+        root.overrideredirect(True)
+        root.attributes("-topmost", True)
+        
+        try:
+            img = Image.open(LOGO_IMAGE)
+            # 限制最大尺寸以避免過大
+            max_size = 600
+            if img.width > max_size or img.height > max_size:
+                ratio = min(max_size / img.width, max_size / img.height)
+                new_size = (int(img.width * ratio), int(img.height * ratio))
+                img = img.resize(new_size, Image.Resampling.LANCZOS)
+            
+            photo = ImageTk.PhotoImage(img)
+            
+            # 計算連結區域高度
+            link_height = 20
+            total_height = img.height + link_height
+            
+            # 置中顯示
+            screen_width = root.winfo_screenwidth()
+            screen_height = root.winfo_screenheight()
+            x = (screen_width - img.width) // 2
+            y = (screen_height - total_height) // 2
+            root.geometry(f"{img.width}x{total_height}+{x}+{y}")
+            
+            # 圖片標籤
+            img_label = tk.Label(root, image=photo)
+            img_label.pack()
+            
+            # GitHub 連結標籤
+            link_label = tk.Label(
+                root, text=GITHUB_URL, fg="blue", bg="#BBBBBB",
+                cursor="hand2", font=("Arial", 8, "underline"), anchor="e"
+            )
+            link_label.pack(fill=tk.X, anchor=tk.E)
+            link_label.bind("<Button-1>", lambda e: webbrowser.open(GITHUB_URL))
+            
+            # 4.5 秒後自動關閉
+            root.after(4500, root.destroy)
+            
+            root.mainloop()
+        except Exception as exc:
+            print(f"顯示 Logo 圖片失敗 : {exc}")
+            try:
+                root.destroy()
+            except Exception:
+                pass
+    
+    # 在背景執行緒顯示，避免阻塞主程式初始化
+    threading.Thread(target=show_splash, daemon=True).start()
+
+# ============================================================================
 # 註冊表操作函數
 # ============================================================================
 # 將註冊值資訊包成 dataclass，方便一次帶出路徑、鍵名、原始值與型別，減少傳遞多個參數的錯誤。
@@ -766,6 +1013,8 @@ def _tray_window_proc(hwnd: wintypes.HWND, msg: wintypes.UINT, wparam: wintypes.
         command_id = wparam & 0xFFFF
         if command_id == IDM_TOGGLE:
             toggle_ime_mode()
+        elif command_id == IDM_SETTINGS:
+            _show_settings_window()
         elif command_id == IDM_EXIT:
             user32.PostMessageW(hwnd, WM_DESTROY, 0, 0)
         return 0
@@ -866,6 +1115,8 @@ def _ensure_tray_menu() -> wintypes.HMENU:
     if not menu:
         raise ctypes.WinError(ctypes.get_last_error())
     
+    # 設定
+    user32.AppendMenuW(menu, MF_STRING, IDM_SETTINGS, "設定")
     # 關閉
     user32.AppendMenuW(menu, MF_STRING, IDM_EXIT, "關閉APP")
     _tray_menu = menu
@@ -1380,6 +1631,11 @@ def run_tray() -> None:
 
 # 程式進入點 : 先同步狀態、掛上鍵盤全域監聽，再提示使用方式，最後進入托盤主迴圈。
 def main() -> None:
+    # 讀取設定檔，根據設定決定是否顯示 Logo
+    config = _load_config()
+    if config.get("logo", True):
+        _show_logo_splash()
+    
     refresh_ime_state()
     keyboard.hook(on_key_event)
     _start_foreground_monitor()
