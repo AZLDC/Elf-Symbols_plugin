@@ -254,6 +254,8 @@ STARTUP_REG_PATH = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
 STARTUP_REG_NAME = "Elf-Symbols_plugin"
 # 啟動後保留預設圖示的秒數，避免托盤頻繁閃爍，也提供系統時間完成初始化。
 INITIAL_ICON_HOLD_SECONDS = 3.0
+# 防止重複啟動用的具名 Mutex 識別碼（與 MODEL_ID 一致以確保唯一性）
+_SINGLE_INSTANCE_MUTEX = f"Global\\{MODEL_ID}"
 
 # --- 系統路徑與外部程式 ---
 SYSTEM_ROOT = os.environ.get("SystemRoot", r"C:\\Windows")
@@ -519,6 +521,9 @@ _tray_class_name = "OfficeHealthIMETrayWindow"
 _tray_nid: Optional[NOTIFYICONDATAW] = None
 _tray_menu: Optional[wintypes.HMENU] = None
 _icon_handle_cache: dict[str, wintypes.HICON] = {}
+
+# --- 單一實例 Mutex 控制碼 ---
+_instance_mutex: Optional[wintypes.HANDLE] = None
 
 # --- Cursors_FIX 狀態 ---
 _cursor_fix_module: Optional[ModuleType] = None
@@ -1653,7 +1658,28 @@ def run_tray() -> None:
     _message_loop()
 
 # 程式進入點 : 先同步狀態、掛上鍵盤全域監聽，再提示使用方式，最後進入托盤主迴圈。
+def _acquire_single_instance() -> bool:
+    """嘗試取得單一實例互斥鎖，若已有實例執行則回傳 False"""
+    global _instance_mutex
+    ERROR_ALREADY_EXISTS = 183
+    handle = kernel32.CreateMutexW(None, False, _SINGLE_INSTANCE_MUTEX)
+    if not handle:
+        # 建立失敗仍允許繼續，避免因權限問題阻擋正常啟動
+        print("無法建立單一實例互斥鎖，略過重複啟動檢查")
+        return True
+    if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+        kernel32.CloseHandle(handle)
+        return False
+    _instance_mutex = handle
+    return True
+
+
 def main() -> None:
+    # 防止重複啟動
+    if not _acquire_single_instance():
+        print("程式已在執行中，請勿重複啟動。")
+        raise SystemExit(0)
+
     # 讀取設定檔，載入語系對應表並根據設定決定是否顯示 Logo
     config = _load_config()
     _init_lang_labels_from_config(config)
