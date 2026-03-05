@@ -38,7 +38,6 @@ from dataclasses import dataclass
 from typing import Optional
 
 # 控制是否在切換輸出模式時強行關閉 ctfmon，再重新啟動
-KILL_CTFMON = False
 GITHUB_URL = "https://github.com/AZLDC/Elf-Symbols_plugin"
 
 # ============================================================================
@@ -545,65 +544,10 @@ def _start_ctfmon_process() -> bool:
         print(f"ShellExecute 啟動 ctfmon.exe 失敗 : {exc}")
     return False
 
-def _kill_ctfmon_elevated() -> bool:
-    """使用提升權限的 taskkill 終止 ctfmon"""
-    executable = TASKKILL_EXE_PATH if os.path.exists(TASKKILL_EXE_PATH) else "taskkill.exe"
-    args = "/IM ctfmon.exe /F"
-    try:
-        result = shell32.ShellExecuteW(None, "runas", executable, args, None, SW_HIDE)
-        if result > 32:
-            print("已透過提升權限的 taskkill 終止 ctfmon.exe")
-            return True
-        print(f"提升權限的 taskkill 失敗（代碼 {result}）")
-    except Exception as exc:
-        print(f"提升權限的 taskkill 失敗 : {exc}")
-    return False
-
-def _kill_ctfmon_process() -> bool:
-    """嘗試終止既有的 ctfmon.exe，必要時提升權限"""
-    escalation_needed = False
-    try:
-        result = subprocess.run(
-            ["taskkill", "/IM", "ctfmon.exe", "/F"],
-            check=False,
-            capture_output=True,
-            creationflags=CREATE_NO_WINDOW,
-            text=True,
-        )
-    except FileNotFoundError:
-        print("找不到 taskkill，無法關閉 ctfmon.exe")
-        return False
-    except PermissionError:
-        print("taskkill 需要提升權限，嘗試升級")
-        escalation_needed = True
-    except Exception as exc:
-        print(f"關閉 ctfmon.exe 失敗 : {exc}")
-        return False
-    else:
-        if result.returncode == 0:
-            return True
-        output = ((result.stdout or "") + (result.stderr or "")).strip()
-        if "存取被拒" in output:
-            print("taskkill 無權終止 ctfmon.exe（存取被拒），嘗試升級")
-            escalation_needed = True
-        else:
-            detail = output or f"exit code {result.returncode}"
-            print(f"taskkill ctfmon.exe 失敗 : {detail}")
-            return False
-
-    if not escalation_needed:
-        return False
-    return _kill_ctfmon_elevated()
-
 def _restart_ctfmon() -> None:
-    """重新啟動 ctfmon.exe 以刷新輸入法"""
+    """ctfmon.exe 再啟動，順便修正音系統原因當掉的輸入法"""
     if os.name != "nt":
         return
-
-    if KILL_CTFMON:
-        if not _kill_ctfmon_process():
-            print("無法終止既有的 ctfmon.exe，請以系統管理員身分手動關閉後重試")
-            return
 
     if not _start_ctfmon_process():
         print("無法重新啟動 ctfmon.exe，輸入法可能無法立即刷洗")
