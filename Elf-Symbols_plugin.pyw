@@ -37,7 +37,7 @@ from dataclasses import dataclass
 # 匯入 Optional 用於型別提示表示「可能為 None」
 from typing import Optional
 
-# 控制是否在切換輸出模式時強行關閉 ctfmon，再重新啟動
+# 自家在GitHub的位置
 GITHUB_URL = "https://github.com/AZLDC/Elf-Symbols_plugin"
 
 # ============================================================================
