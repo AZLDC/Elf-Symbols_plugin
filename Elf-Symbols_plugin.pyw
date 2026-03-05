@@ -37,9 +37,6 @@ from dataclasses import dataclass
 # 匯入 Optional 用於型別提示表示「可能為 None」
 from typing import Optional
 
-# 自家在GitHub的位置
-GITHUB_URL = "https://github.com/AZLDC/Elf-Symbols_plugin"
-
 # ============================================================================
 # Win32 型別補丁（須在常數定義前完成）
 # ============================================================================
@@ -61,11 +58,6 @@ if ctypes.sizeof(ctypes.c_void_p) == 8:
 # ============================================================================
 # 時間與依賴追蹤
 # ============================================================================
-# 紀錄程式啟動時間，稍後計算托盤圖示延遲
-PROGRAM_START_TIME = time.time()
-# 在依賴確認完畢後更新，若未使用額外依賴則維持相同值
-DEPENDENCY_READY_TIME = PROGRAM_START_TIME
-
 def _require_plugin(module_path: str, friendly_name: str):
     """載入可選套件並在缺少時給出具體指引
 
@@ -94,18 +86,92 @@ keyboard = _require_plugin("keyboard", "Keyboard 全域快捷鍵模組")
 # 應用程式常數定義
 # ============================================================================
 # 全域參數集中在這裡 : 包含註冊 AUMID 供系統識別、自訂提示文字、快速鍵時序與相關等待時間。
-# 這些值被設為常數是為了方便調整與維護，避免魔法數散落各處。
+# 這些值被設為常數是為了方便調整與維護，避免變數散落各處。
+
+# 紀錄程式啟動時間，稍後計算托盤圖示延遲
+PROGRAM_START_TIME = time.time()
+# 在依賴確認完畢後更新，若未使用額外依賴則維持相同值
+DEPENDENCY_READY_TIME = PROGRAM_START_TIME
+# 自家在GitHub的位置
+GITHUB_URL = "https://github.com/AZLDC/Elf-Symbols_plugin"
+# 向 Windows 註冊這個 APP 的 ID
 MODEL_ID = "com.AZLDC.TCSCTRN"
 TITLE_HINT = "模式切換 Alt、Alt、W"
-SEQ_TIMEOUT = 0.5  # Alt-Alt 時間窗口（秒）
-READ_RETRY_MAX = 5  # 重試次數
-INPUT_LANG_EN = "00000409"  # 英文輸入法
-INPUT_LANG_BOPOMO = "00000404"  # 新注音/注音輸入法
-INPUT_LANG_BOPOMO_ID = int(INPUT_LANG_BOPOMO, 16)
+# Alt-Alt 時間窗口（秒）
+SEQ_TIMEOUT = 0.5
+# 重試次數
+READ_RETRY_MAX = 5
+# 英文輸入法
+INPUT_LANG_EN = "00000409"
+# 精靈文/注音輸入法
+INPUT_LANG_ELF_SYMBOLS = "00000404"
+
+INPUT_LANG_ELF_SYMBOLS_ID = int(INPUT_LANG_ELF_SYMBOLS, 16)
 INPUT_LANG_LABELS = {
     INPUT_LANG_EN.upper(): "英文鍵盤",
-    INPUT_LANG_BOPOMO.upper(): "新注音鍵盤",
-    "00000411": "日文鍵盤",
+    INPUT_LANG_ELF_SYMBOLS.upper(): "精靈文鍵盤",
+}
+# 預設設定，包含 logo 顯示開關與語系對應表，啟動時會寫入 config.cfg 供使用者自行擴充
+DEFAULT_CONFIG = {
+    "logo": True,
+    "lang_labels": {
+        # 英文地區變體
+        "00000809": "英文鍵盤 (英式)",
+        "00000C09": "英文鍵盤 (澳洲)",
+        "00001009": "英文鍵盤 (加拿大)",
+        "00001409": "英文鍵盤 (紐西蘭)",
+        "00001809": "英文鍵盤 (愛爾蘭)",
+        "00004009": "英文鍵盤 (印度)",
+        "00004409": "英文鍵盤 (馬來西亞)",
+        "00004809": "英文鍵盤 (新加坡)",
+        # 繁體中文輸入法
+        "00010404": "繁體中文倉頡鍵盤",
+        "00020404": "繁體中文速成鍵盤",
+        "00030404": "繁體中文大易鍵盤",
+        "00040404": "繁體中文行列鍵盤",
+        "00000C04": "繁體中文鍵盤 (香港)",
+        "00001404": "繁體中文鍵盤 (澳門)",
+        # 簡體中文輸入法
+        "00000804": "簡體中文拼音鍵盤",
+        "00010804": "簡體中文微軟雙拼",
+        "00020804": "簡體中文五筆鍵盤",
+        "00001004": "簡體中文鍵盤 (新加坡)",
+        # 日韓語系
+        "00000411": "日文鍵盤",
+        "00000412": "韓文鍵盤",
+        # 東南亞語系
+        "0000041E": "泰文鍵盤",
+        "0000042A": "越南文鍵盤",
+        "00000421": "印尼文鍵盤",
+        "0000043E": "馬來文鍵盤",
+        "00000464": "菲律賓文鍵盤",
+        # 歐洲語系
+        "00000407": "德文鍵盤",
+        "0000040C": "法文鍵盤",
+        "0000040A": "西班牙文鍵盤",
+        "00000410": "義大利文鍵盤",
+        "00000816": "葡萄牙文鍵盤",
+        "00000413": "荷蘭文鍵盤",
+        "00000419": "俄文鍵盤",
+        "00000415": "波蘭文鍵盤",
+        "00000422": "烏克蘭文鍵盤",
+        "00000405": "捷克文鍵盤",
+        "0000041B": "斯洛伐克文鍵盤",
+        "0000040E": "匈牙利文鍵盤",
+        "00000418": "羅馬尼亞文鍵盤",
+        "00000402": "保加利亞文鍵盤",
+        "00000408": "希臘文鍵盤",
+        "0000041F": "土耳其文鍵盤",
+        "0000040B": "芬蘭文鍵盤",
+        "0000041D": "瑞典文鍵盤",
+        "00000414": "挪威文鍵盤",
+        "00000406": "丹麥文鍵盤",
+        # 其他語系
+        "00000401": "阿拉伯文鍵盤",
+        "0000040D": "希伯來文鍵盤",
+        "00000429": "波斯文鍵盤",
+        "00000439": "印地文鍵盤",
+    },
 }
 ALT_KEY_NAMES = ("alt", "left alt", "right alt")
 SHIFT_KEY_NAMES = ("shift", "left shift", "right shift")
@@ -576,17 +642,16 @@ def _cleanup_icon_cache() -> None:
 # ============================================================================
 def _load_config() -> dict:
     """讀取設定檔，若不存在或格式錯誤則回傳預設值"""
-    default_config = {"logo": True}
     if not os.path.exists(CONFIG_FILE):
-        return default_config
+        return DEFAULT_CONFIG.copy()
     try:
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             config = json.load(f)
         if not isinstance(config, dict):
-            return default_config
+            return DEFAULT_CONFIG.copy()
         return config
     except (json.JSONDecodeError, OSError):
-        return default_config
+        return DEFAULT_CONFIG.copy()
 
 def _save_config(config: dict) -> bool:
     """儲存設定檔"""
@@ -597,6 +662,20 @@ def _save_config(config: dict) -> bool:
     except OSError as exc:
         print(f"儲存設定檔失敗 : {exc}")
         return False
+
+def _init_lang_labels_from_config(config: dict) -> None:
+    """從設定檔載入語系對應表並合併到 INPUT_LANG_LABELS
+
+    若設定檔尚未包含 lang_labels 區段，會將 DEFAULT_CONFIG 中的預設語系寫入
+    config.cfg，讓使用者日後可自行新增或修改語系對應。
+    """
+    lang_labels = config.get("lang_labels")
+    if lang_labels is None:
+        config["lang_labels"] = DEFAULT_CONFIG["lang_labels"].copy()
+        _save_config(config)
+        lang_labels = config["lang_labels"]
+    if isinstance(lang_labels, dict):
+        INPUT_LANG_LABELS.update(lang_labels)
 
 # ============================================================================
 # 開機啟動偵測與設定函數
@@ -904,7 +983,7 @@ def build_tray_title(mode_text: str) -> str:
 def _resolve_icon_assets() -> tuple[str, str]:
     if not _tray_updates_enabled:
         return ICON_DEFAULT, build_tray_title("正在初始化")
-    if not _is_bopomo_active():
+    if not _is_elf_symbols_active():
         if _current_input_layout:
             label, _ = _describe_layout(_current_input_layout)
             status = f"目前為 {label}"
@@ -1152,25 +1231,25 @@ def _describe_layout(hkl: int) -> tuple[str, str]:
     """依 HKL 轉換成可辨識的語系文字與顯示用十六進位碼"""
     layout_hex = f"{hkl & 0xFFFFFFFF:08X}".upper()
     lang_hex = f"{hkl & 0xFFFF:04X}".zfill(8).upper()
-    label = INPUT_LANG_LABELS.get(layout_hex, INPUT_LANG_LABELS.get(lang_hex, "其他鍵盤"))
+    label = INPUT_LANG_LABELS.get(layout_hex, INPUT_LANG_LABELS.get(lang_hex, f"其他語系 (0x{layout_hex})"))
     return label, layout_hex
 
 
-def _is_bopomo_layout(hkl: Optional[int]) -> bool:
+def _is_elf_symbols_layout(hkl: Optional[int]) -> bool:
     if hkl is None:
         return False
     lang_id = hkl & 0xFFFF
-    if lang_id == INPUT_LANG_BOPOMO_ID:
+    if lang_id == INPUT_LANG_ELF_SYMBOLS_ID:
         return True
     layout_hex = f"{hkl & 0xFFFFFFFF:08X}".upper()
-    return layout_hex.endswith(INPUT_LANG_BOPOMO.upper())
+    return layout_hex.endswith(INPUT_LANG_ELF_SYMBOLS.upper())
 
 
-def _is_bopomo_active() -> bool:
+def _is_elf_symbols_active() -> bool:
     global _current_input_layout
     if _current_input_layout is None:
         _current_input_layout = _read_foreground_layout()
-    return _is_bopomo_layout(_current_input_layout)
+    return _is_elf_symbols_layout(_current_input_layout)
 
 
 def _format_current_layout_detail() -> str:
@@ -1180,8 +1259,8 @@ def _format_current_layout_detail() -> str:
     return f"目前輸入法為 {label} (HKL={layout_hex})"
 
 
-def _ensure_bopomo_input(reason: str) -> bool:
-    if _is_bopomo_active():
+def _ensure_elf_symbols_input(reason: str) -> bool:
+    if _is_elf_symbols_active():
         return True
     print(f"{reason} : 僅在注音輸入法中啟用，{_format_current_layout_detail()}")
     return False
@@ -1418,14 +1497,14 @@ def _refresh_input_language() -> None:
     if switched_en:
         _restart_ctfmon()
     for target_hwnd in targets:
-        _post_input_lang_request(target_hwnd, INPUT_LANG_BOPOMO)
+        _post_input_lang_request(target_hwnd, INPUT_LANG_ELF_SYMBOLS)
 
 # 讀取當前狀態、寫入對側模式，再觸發輸入法刷新，確保使用者立即感受到變更。
 def toggle_ime_mode() -> None:
     """切換 IME 繁/簡輸出"""
     global ime_mode_bit
 
-    if not _ensure_bopomo_input("切換繁/簡輸出"):
+    if not _ensure_elf_symbols_input("切換繁/簡輸出"):
         return
 
     refresh_ime_state()
@@ -1523,7 +1602,7 @@ def on_key_event(event: keyboard.KeyboardEvent) -> None:
                 if len(_alt_timestamps) >= 2 and now - _alt_timestamps[-2] < SEQ_TIMEOUT:
                     # 兩次 Alt 夠接近就觸發等待 W，其他按鍵則視為失敗並重置。
                     _alt_timestamps.clear()
-                    if _ensure_bopomo_input("Alt-Alt 快捷"):
+                    if _ensure_elf_symbols_input("Alt-Alt 快捷"):
                         _start_waiting_for_w()
 
         else:
@@ -1575,8 +1654,9 @@ def run_tray() -> None:
 
 # 程式進入點 : 先同步狀態、掛上鍵盤全域監聽，再提示使用方式，最後進入托盤主迴圈。
 def main() -> None:
-    # 讀取設定檔，根據設定決定是否顯示 Logo
+    # 讀取設定檔，載入語系對應表並根據設定決定是否顯示 Logo
     config = _load_config()
+    _init_lang_labels_from_config(config)
     if config.get("logo", True):
         _show_logo_splash()
     
