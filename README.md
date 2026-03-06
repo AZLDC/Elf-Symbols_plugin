@@ -4,6 +4,13 @@
 
 本工具會讀寫目前使用者登錄檔中的 `Enable Simplified Chinese Output`，並同步更新托盤圖示與提示文字。
 
+## 下載方式
+### 直接使用（推薦）
+- 下載 [GitHub Releases 最新版](https://github.com/AZLDC/Elf-Symbols_plugin/releases/latest)。
+
+### 自行檢視或修改程式碼
+- 想要調整程式邏輯或自行打包，可 clone 專案或下載原始碼，並依「快速開始」段落設定執行環境。
+
 ![陸地鍵仙意象圖](./陸地鍵仙.jpg)
 
 ## 非官方聲明
@@ -168,7 +175,7 @@ py -3 -m pip install keyboard Pillow
 py -3 -m PyInstaller Elf-Symbols_plugin.spec
 ```
 
-打包完成後，將產出的 `.exe` 與 PNG 圖示、`陸地鍵仙.jpg` 放在同一資料夾即可使用。
+打包後 `dist/Elf-Symbols_plugin/` 會自動包含 `繁.png`、`簡.png`、`icon.png` 與 `陸地鍵仙.jpg`（已在 `.spec` 的 `datas` 中設定），使用者無需再手動複製額外圖檔；PyInstaller 已把它們與 `.exe` 放在同一資料夾。
 
 ---
 

@@ -247,7 +247,15 @@ ICON_DEFAULT = _resource_path("icon.png")
 LOGO_IMAGE = _resource_path("陸地鍵仙.jpg")
 
 # --- 設定檔路徑 ---
-CONFIG_FILE = _resource_path("config.cfg")
+# 設定檔必須放在可持久化的位置：打包後放在 exe 旁邊，開發環境放在腳本旁邊
+def _config_file_path() -> str:
+    """取得設定檔路徑，確保 onefile 打包後仍可持久化讀寫"""
+    if hasattr(sys, "frozen"):
+        # PyInstaller 打包後，sys.executable 是 exe 本體路徑
+        return os.path.join(os.path.dirname(sys.executable), "config.cfg")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.cfg")
+
+CONFIG_FILE = _config_file_path()
 
 # --- 開機啟動註冊表路徑 ---
 STARTUP_REG_PATH = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
@@ -706,6 +714,21 @@ def _is_startup_enabled() -> bool:
             return bool(value)
     except OSError:
         return False
+
+def _fix_startup_path_if_needed() -> None:
+    """若已設定登入啟動但路徑與目前位置不符，自動更新為正確路徑"""
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_REG_PATH, 0, winreg.KEY_READ) as key:
+            old_value, _ = winreg.QueryValueEx(key, STARTUP_REG_NAME)
+    except OSError:
+        # 沒有設定過登入啟動，無需修正
+        return
+    current_command = _get_startup_command()
+    if old_value != current_command:
+        print(f"偵測到登入啟動路徑已過期，自動更新")
+        print(f"  舊路徑 : {old_value}")
+        print(f"  新路徑 : {current_command}")
+        _set_startup_enabled(True)
 
 def _set_startup_enabled(enabled: bool) -> bool:
     """設定或移除登入後啟動"""
@@ -1701,6 +1724,9 @@ def main() -> None:
     if not _acquire_single_instance():
         print("程式已在執行中，請勿重複啟動。")
         raise SystemExit(0)
+
+    # 若 exe 曾被搬移，自動修正註冊表中的登入啟動路徑
+    _fix_startup_path_if_needed()
 
     # 讀取設定檔，載入語系對應表並根據設定決定是否顯示 Logo
     config = _load_config()

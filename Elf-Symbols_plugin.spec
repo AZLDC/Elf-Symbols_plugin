@@ -13,6 +13,7 @@ a = Analysis(
         ('繁.png', '.'),
         ('簡.png', '.'),
         ('icon.png', '.'),
+        ('陸地鍵仙.jpg', '.'),
     ],
     hiddenimports=[
         'keyboard',
