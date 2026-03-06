@@ -6,7 +6,7 @@
 
 ## 下載方式
 ### 直接使用（推薦）
-- 下載 [GitHub Releases 最新版](https://github.com/AZLDC/Elf-Symbols_plugin/releases/latest)。
+- 下載 [GitHub Releases 最新版](../../releases/latest)。
 
 ### 自行檢視或修改程式碼
 - 想要調整程式邏輯或自行打包，可 clone 專案或下載原始碼，並依「快速開始」段落設定執行環境。
