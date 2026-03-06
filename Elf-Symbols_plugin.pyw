@@ -730,6 +730,11 @@ def _set_startup_enabled(enabled: bool) -> bool:
 # 設定視窗
 # ============================================================================
 _settings_window_open: bool = False
+# 用於確保 splash 與設定視窗的 tkinter 實例不會同時存在
+_splash_done: threading.Event = threading.Event()
+_splash_done.set()
+# 用於通知 splash 提前關閉（例如使用者開啟設定視窗時）
+_splash_cancel: threading.Event = threading.Event()
 
 def _show_settings_window() -> None:
     """顯示設定視窗"""
@@ -744,6 +749,11 @@ def _create_settings_window() -> None:
     """建立並顯示設定視窗（使用 tkinter）"""
     global _settings_window_open
     _settings_window_open = True
+    
+    # 若 splash 仍在顯示，發送取消信號並等待它關閉，避免多個 tkinter Tk() 同時存在
+    if not _splash_done.is_set():
+        _splash_cancel.set()
+        _splash_done.wait()
     
     try:
         import tkinter as tk
@@ -815,7 +825,7 @@ def _create_settings_window() -> None:
     root.protocol("WM_DELETE_WINDOW", on_close)
     
     # 關閉按鈕
-    close_btn = ttk.Button(frame, text="關閉", command=on_close)
+    close_btn = ttk.Button(frame, text="關閉/儲存", command=on_close)
     close_btn.pack(pady=10)
     
     root.mainloop()
@@ -838,6 +848,8 @@ def _show_logo_splash() -> None:
         return
     
     def show_splash():
+        _splash_done.clear()
+        _splash_cancel.clear()
         root = tk.Tk()
         root.overrideredirect(True)
         root.attributes("-topmost", True)
@@ -876,6 +888,14 @@ def _show_logo_splash() -> None:
             link_label.pack(fill=tk.X, anchor=tk.E)
             link_label.bind("<Button-1>", lambda e: webbrowser.open(GITHUB_URL))
             
+            # 定期檢查是否被外部取消，若是則立即關閉
+            def _check_cancel():
+                if _splash_cancel.is_set():
+                    root.destroy()
+                else:
+                    root.after(100, _check_cancel)
+            
+            root.after(100, _check_cancel)
             # 4.5 秒後自動關閉
             root.after(4500, root.destroy)
             
@@ -886,6 +906,8 @@ def _show_logo_splash() -> None:
                 root.destroy()
             except Exception:
                 pass
+        finally:
+            _splash_done.set()
     
     # 在背景執行緒顯示，避免阻塞主程式初始化
     threading.Thread(target=show_splash, daemon=True).start()
