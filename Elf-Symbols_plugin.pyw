@@ -243,7 +243,7 @@ def _resource_path(relative_path: str) -> str:
 
 ICON_TRAD = _resource_path("繁.png")
 ICON_SIMP = _resource_path("簡.png")
-ICON_DEFAULT = _resource_path("轉.png")
+ICON_DEFAULT = _resource_path("icon.png")
 LOGO_IMAGE = _resource_path("陸地鍵仙.jpg")
 
 # --- 設定檔路徑 ---

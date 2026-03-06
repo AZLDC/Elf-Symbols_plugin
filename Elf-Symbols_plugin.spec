@@ -12,7 +12,7 @@ a = Analysis(
     datas=[
         ('繁.png', '.'),
         ('簡.png', '.'),
-        ('轉.png', '.'),
+        ('icon.png', '.'),
     ],
     hiddenimports=[
         'keyboard',
@@ -46,6 +46,6 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='轉.png',  # 使用轉.png 作為 exe 圖示
+    icon='icon.png',  # 使用icon.png 作為 exe 圖示
     uac_admin=False,
 )

@@ -72,7 +72,7 @@
 ## 檔案清單
 請確認下列檔案位於同一資料夾：
 - `Elf-Symbols_plugin.pyw`
-- `繁.png`、`簡.png`、`轉.png`
+- `繁.png`、`簡.png`、`icon.png`
 - `陸地鍵仙.jpg`（啟動 Logo 圖片）
 - `config.cfg`（程式自動產生的設定檔，包含語系對應表等設定）
 - `關.png`（托盤選單關閉方式示意圖）
@@ -140,7 +140,7 @@ py -3 -m pip install keyboard Pillow
 - 若前景程式以系統管理員權限執行，可能造成不同完整性層級而使熱鍵偵測失效。可嘗試以相同權限執行本工具，或避免在提升權限的前景程式內使用熱鍵。
 
 ### 2) 托盤圖示顯示異常 / 沒有圖示
-- 確認 `繁.png`、`簡.png`、`轉.png` 與 `Elf-Symbols_plugin.pyw` 位於同一資料夾。
+- 確認 `繁.png`、`簡.png`、`icon.png` 與 `Elf-Symbols_plugin.pyw` 位於同一資料夾。
 - 若你移動了腳本位置，請一併移動 PNG 圖示。
 
 ### 3) 切換後沒有立刻生效
