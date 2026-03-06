@@ -171,11 +171,17 @@ py -3 -m pip install keyboard Pillow
 ## 打包為執行檔（選用）
 本專案提供 `Elf-Symbols_plugin.spec` 供 [PyInstaller](https://pyinstaller.org/) 使用，可將程式打包為單一 `.exe` 執行檔，無需另行安裝 Python 即可執行。
 
+### 一鍵打包
+點兩下 `build_release.bat` 即可自動完成以下流程：
+1. 使用 PyInstaller 打包 `.exe`
+2. 壓縮產出 `Release\Excutable_APP.zip`（exe）與 `Release\Excutable_Script.zip`（腳本 + 資源）
+3. 自動清理 `build\` 與 `dist\` 暫存資料夾
+
+### 手動打包
 ```bash
 py -3 -m PyInstaller Elf-Symbols_plugin.spec
 ```
-
-打包後 `dist/Elf-Symbols_plugin/` 會自動包含 `繁.png`、`簡.png`、`icon.png` 與 `陸地鍵仙.jpg`（已在 `.spec` 的 `datas` 中設定），使用者無需再手動複製額外圖檔；PyInstaller 已把它們與 `.exe` 放在同一資料夾。
+打包後的單一執行檔位於 `dist\Elf-Symbols_plugin.exe`，所需圖檔（`繁.png`、`簡.png`、`icon.png`、`陸地鍵仙.jpg`）已在 `.spec` 的 `datas` 中設定，會內嵌至 `.exe` 中，無需額外複製。
 
 ---
 
