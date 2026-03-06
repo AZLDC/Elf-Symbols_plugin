@@ -776,7 +776,7 @@ def _create_settings_window() -> None:
     
     # 設定視窗大小與位置（置中）
     window_width = 300
-    window_height = 150
+    window_height = 160
     screen_width = root.winfo_screenwidth()
     screen_height = root.winfo_screenheight()
     x = (screen_width - window_width) // 2
@@ -784,8 +784,8 @@ def _create_settings_window() -> None:
     root.geometry(f"{window_width}x{window_height}+{x}+{y}")
     
     # 建立框架
-    frame = ttk.Frame(root, padding="20")
-    frame.pack(fill=tk.BOTH, expand=True)
+    frame = ttk.Frame(root)
+    frame.pack(padx=40, pady=20, anchor=tk.CENTER)
     
     # 核選方塊變數
     startup_var = tk.BooleanVar(value=initial_startup)
@@ -825,8 +825,8 @@ def _create_settings_window() -> None:
     root.protocol("WM_DELETE_WINDOW", on_close)
     
     # 關閉按鈕
-    close_btn = ttk.Button(frame, text="關閉/儲存", command=on_close)
-    close_btn.pack(pady=10)
+    close_btn = ttk.Button(root, text="關閉/儲存", command=on_close)
+    close_btn.pack(anchor=tk.S, pady=5)
     
     root.mainloop()
 
