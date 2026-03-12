@@ -82,6 +82,18 @@ def _require_plugin(module_path: str, friendly_name: str):
 
 keyboard = _require_plugin("keyboard", "Keyboard 全域快捷鍵模組")
 
+def _resource_path(relative_path: str) -> str:
+    """取得資源檔案的絕對路徑，相容 PyInstaller 打包環境"""
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), relative_path)
+
+def _config_file_path() -> str:
+    """取得設定檔路徑，確保 onefile 打包後仍可持久化讀寫"""
+    if hasattr(sys, "frozen"):
+        return os.path.join(os.path.dirname(sys.executable), "config.cfg")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.cfg")
+
 # ============================================================================
 # 應用程式常數定義
 # ============================================================================
@@ -225,6 +237,15 @@ def _build_candidate_paths() -> None:
 
 _build_candidate_paths()
 
+# --- Win32 工作列相關常數 ---
+SW_HIDE = 0
+SPI_GETWORKAREA = 0x0030
+ABM_GETTASKBARPOS = 0x00000005
+ABE_LEFT = 0
+ABE_TOP = 1
+ABE_RIGHT = 2
+ABE_BOTTOM = 3
+
 # 註冊 AppUserModelID 讓托盤圖示與通知可被系統正確歸屬，避免被視為未知程式。
 def set_app_user_model_id(app_id: str) -> None:
     try:
@@ -232,28 +253,12 @@ def set_app_user_model_id(app_id: str) -> None:
     except Exception:
         pass
 
-# 根據目前腳本所在資料夾準備圖示與資源，避免使用者移動程式後造成檔案遺失。
-# PyInstaller 打包後資源會解壓到 sys._MEIPASS，需特別處理路徑。
-def _resource_path(relative_path: str) -> str:
-    """取得資源檔案的絕對路徑，相容 PyInstaller 打包環境"""
-    if hasattr(sys, '_MEIPASS'):
-        # PyInstaller 打包後的臨時資源目錄
-        return os.path.join(sys._MEIPASS, relative_path)
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), relative_path)
-
 ICON_TRAD = _resource_path("繁.png")
 ICON_SIMP = _resource_path("簡.png")
 ICON_DEFAULT = _resource_path("icon.png")
 LOGO_IMAGE = _resource_path("陸地鍵仙.jpg")
-
-# --- 設定檔路徑 ---
-# 設定檔必須放在可持久化的位置：打包後放在 exe 旁邊，開發環境放在腳本旁邊
-def _config_file_path() -> str:
-    """取得設定檔路徑，確保 onefile 打包後仍可持久化讀寫"""
-    if hasattr(sys, "frozen"):
-        # PyInstaller 打包後，sys.executable 是 exe 本體路徑
-        return os.path.join(os.path.dirname(sys.executable), "config.cfg")
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.cfg")
+# 讓啟動畫面 Logo 與螢幕邊緣保持安全距離，避免視覺上貼邊
+LOGO_SCREEN_MARGIN = 5
 
 CONFIG_FILE = _config_file_path()
 
@@ -270,94 +275,6 @@ SYSTEM_ROOT = os.environ.get("SystemRoot", r"C:\\Windows")
 SYSTEM32_PATH = os.path.join(SYSTEM_ROOT, "System32")
 CTFMON_EXE_PATH = os.path.join(SYSTEM32_PATH, "ctfmon.exe")
 TASKKILL_EXE_PATH = os.path.join(SYSTEM32_PATH, "taskkill.exe")
-
-# ============================================================================
-# Cursors_FIX 整合（選用）
-# ============================================================================
-_CURSOR_FIX_FILENAME = "Cursors_FIX.py"
-
-def _cursor_fix_script_path() -> str:
-    if hasattr(sys, "_MEIPASS"):
-        base_dir = sys._MEIPASS
-    else:
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base_dir, _CURSOR_FIX_FILENAME)
-
-def _load_cursor_fix_module() -> Optional[ModuleType]:
-    global _cursor_fix_module
-    if _cursor_fix_module is not None:
-        return _cursor_fix_module
-    script_path = _cursor_fix_script_path()
-    if not os.path.exists(script_path):
-        return None
-    spec = importlib.util.spec_from_file_location("Cursors_FIX_embed", script_path)
-    if spec is None or spec.loader is None:
-        print("Cursors_FIX 解析失敗，略過啟動")
-        return None
-    module = importlib.util.module_from_spec(spec)
-    try:
-        spec.loader.exec_module(module)
-    except Exception as exc:
-        print(f"載入 Cursors_FIX 失敗 : {exc}")
-        return None
-    _cursor_fix_module = module
-    return module
-
-def _cursor_fix_worker(module: ModuleType) -> None:
-    get_cursor_handle = getattr(module, "get_cursor_handle", None)
-    force_reload = getattr(module, "force_reload_cursors", None)
-    if not callable(get_cursor_handle) or not callable(force_reload):
-        print("Cursors_FIX 模組缺少必要函式，無法啟動")
-        return
-
-    poll_interval = getattr(module, "POLL_INTERVAL_SEC", getattr(module, "poll_interval_sec", 0.02))
-    cooldown = getattr(module, "COOLDOWN_SEC", getattr(module, "cooldown_sec", 0.10))
-    last_handle = None
-    cooldown_until = 0.0
-    print("Cursors_FIX 游標監控執行緒啟動")
-
-    while not _cursor_fix_stop_event.wait(poll_interval):
-        handle = get_cursor_handle()
-        if not handle:
-            continue
-        if last_handle is None:
-            last_handle = handle
-            # print(f"[Cursors_FIX] 初始游標 : {handle:#010x}")
-            continue
-        if handle != last_handle:
-            now = time.monotonic()
-            if now >= cooldown_until:
-                # print(f"[Cursors_FIX] 游標切換 {last_handle:#010x} -> {handle:#010x}，觸發重載")
-                try:
-                    force_reload()
-                except Exception as exc:
-                    print(f"[Cursors_FIX] 重載失敗 : {exc}")
-                cooldown_until = now + cooldown
-            last_handle = handle
-
-    print("Cursors_FIX 游標監控執行緒結束")
-
-def _start_cursor_fix_monitor() -> None:
-    global _cursor_fix_thread
-    if _cursor_fix_thread is not None:
-        return
-    module = _load_cursor_fix_module()
-    if module is None:
-        return
-    _cursor_fix_stop_event.clear()
-    thread = threading.Thread(target=_cursor_fix_worker, args=(module,), daemon=True)
-    _cursor_fix_thread = thread
-    thread.start()
-
-def _stop_cursor_fix_monitor() -> None:
-    global _cursor_fix_thread
-    if _cursor_fix_thread is None:
-        return
-    _cursor_fix_stop_event.set()
-    _cursor_fix_thread.join(timeout=2.0)
-    _cursor_fix_thread = None
-    _cursor_fix_stop_event.clear()
-SW_HIDE = 0
 
 # ============================================================================
 # Win32 API 綁定與常數
@@ -490,6 +407,75 @@ class GUITHREADINFO(ctypes.Structure):
         ("rcCaret", RECT),
     ]
 
+class APPBARDATA(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("hWnd", wintypes.HWND),
+        ("uCallbackMessage", wintypes.UINT),
+        ("uEdge", wintypes.UINT),
+        ("rc", RECT),
+        ("lParam", wintypes.LPARAM),
+    ]
+
+def _get_system_work_area() -> RECT:
+    """取得系統未被工作列佔用的工作區域座標"""
+    rect = RECT()
+    if user32.SystemParametersInfoW(SPI_GETWORKAREA, 0, ctypes.byref(rect), 0):
+        return rect
+    rect.left = 0
+    rect.top = 0
+    rect.right = user32.GetSystemMetrics(0)
+    rect.bottom = user32.GetSystemMetrics(1)
+    return rect
+
+def _get_taskbar_edge_rect() -> Optional[tuple[int, RECT]]:
+    """取得工作列位置與範圍，若無法取得則回傳 None"""
+    hwnd = user32.FindWindowW("Shell_TrayWnd", None)
+    if not hwnd:
+        return None
+    data = APPBARDATA()
+    data.cbSize = ctypes.sizeof(APPBARDATA)
+    data.hWnd = hwnd
+    result = shell32.SHAppBarMessage(ABM_GETTASKBARPOS, ctypes.byref(data))
+    if not result:
+        return None
+    return data.uEdge, data.rc
+
+def _calculate_logo_anchor(width: int, height: int) -> tuple[int, int]:
+    """依據工作列位置計算 Logo 視窗起始座標並保留邊距"""
+    padding = LOGO_SCREEN_MARGIN
+    work_area = _get_system_work_area()
+    x = work_area.right - width - padding
+    y = work_area.bottom - height - padding
+    info = _get_taskbar_edge_rect()
+    if info:
+        edge, rect = info
+        if edge == ABE_BOTTOM:
+            x = rect.right - width - padding
+            y = rect.top - height - padding
+        elif edge == ABE_TOP:
+            x = rect.right - width - padding
+            y = rect.bottom + padding
+        elif edge == ABE_LEFT:
+            x = rect.right + padding
+            y = rect.bottom - height - padding
+        elif edge == ABE_RIGHT:
+            x = rect.left - width - padding
+            y = rect.bottom - height - padding
+    min_x = work_area.left + padding
+    max_x = work_area.right - width - padding
+    if max_x < min_x:
+        min_x = work_area.left
+        max_x = work_area.right - width
+    min_y = work_area.top + padding
+    max_y = work_area.bottom - height - padding
+    if max_y < min_y:
+        min_y = work_area.top
+        max_y = work_area.bottom - height
+    x = max(min_x, min(x, max_x))
+    y = max(min_y, min(y, max_y))
+    return int(x), int(y)
+
 # ============================================================================
 # 全域狀態變數
 # ============================================================================
@@ -537,6 +523,93 @@ _instance_mutex: Optional[wintypes.HANDLE] = None
 _cursor_fix_module: Optional[ModuleType] = None
 _cursor_fix_thread: Optional[threading.Thread] = None
 _cursor_fix_stop_event = threading.Event()
+
+# ============================================================================
+# Cursors_FIX 整合（選用）
+# ============================================================================
+_CURSOR_FIX_FILENAME = "Cursors_FIX.py"
+
+def _cursor_fix_script_path() -> str:
+    if hasattr(sys, "_MEIPASS"):
+        base_dir = sys._MEIPASS
+    else:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_dir, _CURSOR_FIX_FILENAME)
+
+def _load_cursor_fix_module() -> Optional[ModuleType]:
+    global _cursor_fix_module
+    if _cursor_fix_module is not None:
+        return _cursor_fix_module
+    script_path = _cursor_fix_script_path()
+    if not os.path.exists(script_path):
+        return None
+    spec = importlib.util.spec_from_file_location("Cursors_FIX_embed", script_path)
+    if spec is None or spec.loader is None:
+        print("Cursors_FIX 解析失敗，略過啟動")
+        return None
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except Exception as exc:
+        print(f"載入 Cursors_FIX 失敗 : {exc}")
+        return None
+    _cursor_fix_module = module
+    return module
+
+def _cursor_fix_worker(module: ModuleType) -> None:
+    get_cursor_handle = getattr(module, "get_cursor_handle", None)
+    force_reload = getattr(module, "force_reload_cursors", None)
+    if not callable(get_cursor_handle) or not callable(force_reload):
+        print("Cursors_FIX 模組缺少必要函式，無法啟動")
+        return
+
+    poll_interval = getattr(module, "POLL_INTERVAL_SEC", getattr(module, "poll_interval_sec", 0.02))
+    cooldown = getattr(module, "COOLDOWN_SEC", getattr(module, "cooldown_sec", 0.10))
+    last_handle = None
+    cooldown_until = 0.0
+    print("Cursors_FIX 游標監控執行緒啟動")
+
+    while not _cursor_fix_stop_event.wait(poll_interval):
+        handle = get_cursor_handle()
+        if not handle:
+            continue
+        if last_handle is None:
+            last_handle = handle
+            # print(f"[Cursors_FIX] 初始游標 : {handle:#010x}")
+            continue
+        if handle != last_handle:
+            now = time.monotonic()
+            if now >= cooldown_until:
+                # print(f"[Cursors_FIX] 游標切換 {last_handle:#010x} -> {handle:#010x}，觸發重載")
+                try:
+                    force_reload()
+                except Exception as exc:
+                    print(f"[Cursors_FIX] 重載失敗 : {exc}")
+                cooldown_until = now + cooldown
+            last_handle = handle
+
+    print("Cursors_FIX 游標監控執行緒結束")
+
+def _start_cursor_fix_monitor() -> None:
+    global _cursor_fix_thread
+    if _cursor_fix_thread is not None:
+        return
+    module = _load_cursor_fix_module()
+    if module is None:
+        return
+    _cursor_fix_stop_event.clear()
+    thread = threading.Thread(target=_cursor_fix_worker, args=(module,), daemon=True)
+    _cursor_fix_thread = thread
+    thread.start()
+
+def _stop_cursor_fix_monitor() -> None:
+    global _cursor_fix_thread
+    if _cursor_fix_thread is None:
+        return
+    _cursor_fix_stop_event.set()
+    _cursor_fix_thread.join(timeout=2.0)
+    _cursor_fix_thread = None
+    _cursor_fix_stop_event.clear()
 
 # ============================================================================
 # GDI+ 圖示處理函數
@@ -892,11 +965,15 @@ def _show_logo_splash() -> None:
             link_height = 20
             total_height = img.height + link_height
             
-            # 置中顯示
-            screen_width = root.winfo_screenwidth()
-            screen_height = root.winfo_screenheight()
-            x = (screen_width - img.width) // 2
-            y = (screen_height - total_height) // 2
+            # 依據工作列位置對齊剩餘可用空間，失敗時退回置中
+            try:
+                x, y = _calculate_logo_anchor(img.width, total_height)
+            except Exception as exc:
+                print(f"計算 Logo 位置失敗，改用置中 : {exc}")
+                screen_width = root.winfo_screenwidth()
+                screen_height = root.winfo_screenheight()
+                x = (screen_width - img.width) // 2
+                y = (screen_height - total_height) // 2
             root.geometry(f"{img.width}x{total_height}+{x}+{y}")
             
             # 圖片標籤
