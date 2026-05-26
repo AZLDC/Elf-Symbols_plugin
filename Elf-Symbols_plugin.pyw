@@ -20,10 +20,13 @@ import subprocess
 # 匯入 sys 取得 PyInstaller 解壓目錄與腳本資訊
 import sys
 sys.dont_write_bytecode = True
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODUEL_DIR = os.path.join(BASE_DIR, "moduel")
 # 匯入 time 供排程、計時與重試控制
 import time
 # 匯入 threading 建立背景計時器與非同步操作
 import threading
+import traceback
 # 匯入 ctypes 直接呼叫 Win32 API
 import ctypes
 # 匯入 winreg 讀寫註冊表中的 IME 設定
@@ -86,13 +89,43 @@ def _resource_path(relative_path: str) -> str:
     """取得資源檔案的絕對路徑，相容 PyInstaller 打包環境"""
     if hasattr(sys, '_MEIPASS'):
         return os.path.join(sys._MEIPASS, relative_path)
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), relative_path)
+    return os.path.join(BASE_DIR, relative_path)
 
 def _config_file_path() -> str:
     """取得設定檔路徑，確保 onefile 打包後仍可持久化讀寫"""
     if hasattr(sys, "frozen"):
         return os.path.join(os.path.dirname(sys.executable), "config.cfg")
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.cfg")
+    return os.path.join(BASE_DIR, "config.cfg")
+
+
+def _load_moduel_plugins() -> None:
+    """掃描 moduel 資料夾並載入可用擴充模組"""
+    if not os.path.isdir(MODUEL_DIR):
+        return
+
+    try:
+        entries = sorted(os.listdir(MODUEL_DIR))
+    except OSError as exc:
+        print(f"無法讀取 moduel 目錄：{exc}")
+        return
+
+    module_names = [
+        entry[:-3]
+        for entry in entries
+        if entry.lower().endswith(".py") and entry.lower() != "__init__.py"
+    ]
+
+    if not module_names:
+        return
+
+    for module_name in module_names:
+        import_name = f"moduel.{module_name}"
+        try:
+            importlib.import_module(import_name)
+            print(f"[INFO] 已載入 moduel 擴充：{import_name}")
+        except Exception:
+            print(f"[ERROR] moduel 擴充載入失敗：{import_name}")
+            traceback.print_exc()
 
 # ============================================================================
 # 應用程式常數定義
@@ -870,9 +903,39 @@ def _create_settings_window() -> None:
     root.resizable(False, False)
     root.attributes("-topmost", True)
     
+    # 建立配色與樣式
+    palette = {
+        "bg_primary": "#0f1420",
+        "bg_card": "#191f30",
+        "border": "#2c3550",
+        "accent": "#78f4eb",
+        "text_primary": "#e4eafb",
+        "text_secondary": "#94a0c3",
+    }
+    root.configure(bg=palette["bg_primary"])
+    style = ttk.Style(root)
+    try:
+        style.theme_use("clam")
+    except tk.TclError:
+        pass
+    style.configure(
+        "Primary.TButton",
+        background=palette["accent"],
+        foreground=palette["bg_primary"],
+        font=("微軟正黑體", 12, "bold"),
+        padding=(18, 8),
+        borderwidth=0,
+        focusthickness=2,
+        focuscolor=palette["border"],
+    )
+    style.map(
+        "Primary.TButton",
+        background=[("active", "#66dfd8")],
+        foreground=[("disabled", "#30384e")],
+    )
     # 設定視窗大小與位置（置中）
-    window_width = 300
-    window_height = 160
+    window_width = 460
+    window_height = 320
     screen_width = root.winfo_screenwidth()
     screen_height = root.winfo_screenheight()
     x = (screen_width - window_width) // 2
@@ -880,20 +943,70 @@ def _create_settings_window() -> None:
     root.geometry(f"{window_width}x{window_height}+{x}+{y}")
     
     # 建立框架
-    frame = ttk.Frame(root)
-    frame.pack(padx=40, pady=20, anchor=tk.CENTER)
+    container = tk.Frame(root, bg=palette["bg_primary"], highlightthickness=0, bd=0)
+    container.pack(fill=tk.BOTH, expand=True, padx=24, pady=(20, 16))
+    
+    hero = tk.Frame(container, bg=palette["bg_card"], highlightthickness=0, bd=0)
+    hero.pack(fill=tk.X, pady=(0, 16))
+    hero_content = tk.Frame(hero, bg=palette["bg_card"], highlightthickness=0, bd=0)
+    hero_content.pack(fill=tk.X, padx=18, pady=16)
+    tk.Label(
+        hero_content,
+        text="Elf Symbols 插件設定",
+        bg=palette["bg_card"],
+        fg=palette["text_primary"],
+        font=("微軟正黑體", 16, "bold"),
+        anchor="w",
+    ).pack(fill=tk.X)
+    tk.Label(
+        hero_content,
+        text="微調介面與啟動畫面，讓桌面體驗更順眼",
+        bg=palette["bg_card"],
+        fg=palette["text_secondary"],
+        font=("微軟正黑體", 10),
+        anchor="w",
+        wraplength=360,
+        justify="left",
+    ).pack(fill=tk.X, pady=(4, 0))
     
     # 核選方塊變數
     startup_var = tk.BooleanVar(value=initial_startup)
     logo_var = tk.BooleanVar(value=initial_logo)
     
-    # 登入後啟動核選方塊
-    startup_cb = ttk.Checkbutton(frame, text="登入後啟動", variable=startup_var)
-    startup_cb.pack(anchor=tk.W, pady=5)
+    def _build_option(parent: tk.Widget, title: str, desc: str, variable: tk.BooleanVar):
+        card = tk.Frame(parent, bg=palette["bg_card"], highlightthickness=0, bd=0)
+        card.pack(fill=tk.X, pady=8)
+        tk.Checkbutton(
+            card,
+            text=title,
+            variable=variable,
+            font=("微軟正黑體", 12, "bold"),
+            bg=palette["bg_card"],
+            fg=palette["text_primary"],
+            activebackground=palette["bg_card"],
+            activeforeground=palette["text_primary"],
+            selectcolor=palette["bg_card"],
+            highlightthickness=0,
+            bd=0,
+            pady=4,
+            anchor="w",
+        ).pack(anchor=tk.W, padx=16)
+        tk.Label(
+            card,
+            text=desc,
+            bg=palette["bg_card"],
+            fg=palette["text_secondary"],
+            font=("微軟正黑體", 10),
+            anchor="w",
+            justify="left",
+            wraplength=360,
+        ).pack(anchor=tk.W, padx=20, pady=(2, 10))
     
-    # 顯示 Logo 核選方塊
-    logo_cb = ttk.Checkbutton(frame, text="啟動時顯示 Logo", variable=logo_var)
-    logo_cb.pack(anchor=tk.W, pady=5)
+    options_wrapper = tk.Frame(container, bg=palette["bg_primary"], highlightthickness=0, bd=0)
+    options_wrapper.pack(fill=tk.BOTH, expand=True)
+    
+    _build_option(options_wrapper, "登入後啟動", "配合桌面開機流程，自動載入符號鍵位配置", startup_var)
+    _build_option(options_wrapper, "啟動時顯示 Logo", "維持品牌識別並於啟動時顯示 GitHub 連結", logo_var)
     
     def on_close():
         global _settings_window_open
@@ -920,9 +1033,24 @@ def _create_settings_window() -> None:
     
     root.protocol("WM_DELETE_WINDOW", on_close)
     
-    # 關閉按鈕
-    close_btn = ttk.Button(root, text="關閉/儲存", command=on_close)
-    close_btn.pack(anchor=tk.S, pady=5)
+    button_row = tk.Frame(container, bg=palette["bg_primary"], highlightthickness=0, bd=0)
+    button_row.pack(fill=tk.X, pady=(12, 0))
+    button_row.grid_columnconfigure(0, weight=1)
+    tk.Label(
+        button_row,
+        text="變更會即時套用，下次開機也會沿用設定",
+        bg=palette["bg_primary"],
+        fg=palette["text_secondary"],
+        font=("微軟正黑體", 9),
+        anchor="w",
+    ).grid(row=0, column=0, sticky="w")
+    ttk.Button(button_row, text="儲存並關閉", command=on_close, style="Primary.TButton").grid(
+        row=0,
+        column=1,
+        sticky="e",
+        padx=(12, 0),
+        pady=(12, 0),
+    )
     
     root.mainloop()
 
@@ -1815,6 +1943,7 @@ def main() -> None:
     keyboard.hook(on_key_event)
     _start_foreground_monitor()
     _start_cursor_fix_monitor()
+    _load_moduel_plugins()
 
     # 以文字提示提醒使用者操作方式，當托盤圖示不可見時仍能得知快捷鍵。
     print("Alt-Alt-W = 切換輸入法繁/簡輸出")
